@@ -95,9 +95,37 @@ function classifyStatus(
   return "other";
 }
 
+// ─── SA Team Filter ──────────────────────────────────────────────────────────
+
+/**
+ * Partial name keywords for each SA team member.
+ * Matching is case-insensitive and checks if the Jira displayName
+ * contains ANY of these keywords.
+ */
+export const SA_TEAM_KEYWORDS = [
+  "willy",       // Willy Taufik
+  "farisan",     // M Farisan
+  "rifqi",       // Rifqi Zhafar
+  "ilyas",       // M Ilyas
+  "rahmat",      // Rahmat Hidayat
+  "nitha",       // Nitha Huwaida
+  "auliya",      // Auliya Barendra
+  "akbar",       // Akbar Maulana Fikri
+  "lalang",      // Lalang Indra
+  "sugianto",    // Sugianto
+  "laksito",     // Laksito
+];
+
+/** Returns true if a Jira displayName belongs to the SA team. */
+export function isSAMember(displayName: string | null | undefined): boolean {
+  if (!displayName) return false;
+  const lower = displayName.toLowerCase();
+  return SA_TEAM_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 // ─── Jira API ────────────────────────────────────────────────────────────────
 
-/** Fetch all active BUGS26 issues. */
+/** Fetch all active BUGS26 issues and filter to SA team assignees only. */
 const DEFAULT_JQL = `project = 'BUGS26' AND (status NOT IN (Done, Closed) OR updatedDate >= startOfDay()) ORDER BY assignee ASC, updated DESC`;
 
 export async function fetchJiraTasks(
@@ -132,7 +160,10 @@ export async function fetchJiraTasks(
     startAt += maxResults;
   } while (true);
 
-  return allIssues;
+  // Filter to SA team members only
+  return allIssues.filter((issue) =>
+    isSAMember(issue.fields.assignee?.displayName)
+  );
 }
 
 // ─── Stats ───────────────────────────────────────────────────────────────────

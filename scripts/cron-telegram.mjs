@@ -59,6 +59,28 @@ function categorizeTask(statusName) {
     : "done";
 }
 
+// ─── SA Team Filter ──────────────────────────────────────────────────────────
+
+const SA_TEAM_KEYWORDS = [
+  "willy",       // Willy Taufik
+  "farisan",     // M Farisan
+  "rifqi",       // Rifqi Zhafar
+  "ilyas",       // M Ilyas
+  "rahmat",      // Rahmat Hidayat
+  "nitha",       // Nitha Huwaida
+  "auliya",      // Auliya Barendra
+  "akbar",       // Akbar Maulana Fikri
+  "lalang",      // Lalang Indra
+  "sugianto",    // Sugianto
+  "laksito",     // Laksito
+];
+
+function isSAMember(displayName) {
+  if (!displayName) return false;
+  const lower = displayName.toLowerCase();
+  return SA_TEAM_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 // ─── Jira API ───────────────────────────────────────────────────────────────
 
 async function fetchJiraTasks() {
@@ -98,7 +120,9 @@ async function fetchJiraTasks() {
     startAt += maxResults;
   }
 
-  return allIssues;
+  return allIssues.filter((issue) =>
+    isSAMember(issue.fields.assignee?.displayName)
+  );
 }
 
 // ─── Grouping ───────────────────────────────────────────────────────────────
