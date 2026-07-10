@@ -130,7 +130,7 @@ export function UnifiedDashboard() {
                   Module
                 </label>
                 <Combobox
-                  onValueChange={(val) => setValue("module", val)}
+                  onValueChange={(val) => setValue("module", val || "")}
                   defaultValue="All Modules"
                   inputValue={moduleSearch}
                   onInputValueChange={setModuleSearch}
@@ -159,7 +159,7 @@ export function UnifiedDashboard() {
                   Priority
                 </label>
                 <Combobox
-                  onValueChange={(val) => setValue("priority", val)}
+                  onValueChange={(val) => setValue("priority", val || "")}
                   defaultValue="All Priorities"
                   inputValue={prioritySearch}
                   onInputValueChange={setPrioritySearch}
@@ -188,7 +188,7 @@ export function UnifiedDashboard() {
                   Status
                 </label>
                 <Combobox
-                  onValueChange={(val) => setValue("status", val)}
+                  onValueChange={(val) => setValue("status", val || "")}
                   defaultValue="All Status"
                   inputValue={statusSearch}
                   onInputValueChange={setStatusSearch}
