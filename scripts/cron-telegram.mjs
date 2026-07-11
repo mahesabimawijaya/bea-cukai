@@ -103,7 +103,7 @@ async function fetchJiraTasks() {
         jql,
         startAt,
         maxResults,
-        fields: ["summary", "status", "assignee", "updated", "created"],
+        fields: ["summary", "status", "assignee", "customfield_10613", "updated", "created"],
       }),
     });
 
@@ -120,30 +120,38 @@ async function fetchJiraTasks() {
     startAt += maxResults;
   }
 
-  return allIssues.filter((issue) =>
-    isSAMember(issue.fields.assignee?.displayName)
-  );
+  // Return all active issues (we'll filter the groups next)
+  return allIssues;
 }
 
-// ─── Grouping ───────────────────────────────────────────────────────────────
+// ─── Grouping by SA ─────────────────────────────────────────────────────────
 
-function groupTasksByAssignee(issues) {
+function groupTasksBySA(issues) {
   const grouped = new Map();
 
   for (const issue of issues) {
-    const name = issue.fields.assignee?.displayName?.trim() || "Unassigned";
-    if (!grouped.has(name)) {
-      grouped.set(name, { assigneeName: name, whatsDone: [], whatsNext: [] });
-    }
-    const group = grouped.get(name);
-    if (categorizeTask(issue.fields.status.name) === "done") {
-      group.whatsDone.push(issue);
-    } else {
-      group.whatsNext.push(issue);
+    const saMembers = issue.fields.customfield_10613;
+    if (!saMembers || saMembers.length === 0) continue;
+
+    for (const sa of saMembers) {
+      const name = sa.displayName?.trim() || sa.name;
+      
+      // Only include if this SA member is part of the SA team
+      if (!isSAMember(name)) continue;
+
+      if (!grouped.has(name)) {
+        grouped.set(name, { assigneeName: name, whatsDone: [], whatsNext: [] });
+      }
+      const group = grouped.get(name);
+      if (categorizeTask(issue.fields.status.name) === "done") {
+        group.whatsDone.push(issue);
+      } else {
+        group.whatsNext.push(issue);
+      }
     }
   }
 
-  return Array.from(grouped.values());
+  return Array.from(grouped.values()).sort((a, b) => a.assigneeName.localeCompare(b.assigneeName));
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
@@ -334,9 +342,9 @@ async function runReport() {
     const issues = await fetchJiraTasks();
     console.log(`✅ Fetched ${issues.length} issues total`);
 
-    // 2. Group by assignee
-    const grouped = groupTasksByAssignee(issues);
-    console.log(`👥 Grouped into ${grouped.length} assignee(s)`);
+    // 2. Group by SA team member (customfield_10613)
+    const grouped = groupTasksBySA(issues);
+    console.log(`👥 Grouped into ${grouped.length} SA member(s)`);
 
     // 3. Compute stats
     const stats = computeStats(issues, grouped);

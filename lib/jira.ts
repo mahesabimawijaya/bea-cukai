@@ -143,7 +143,14 @@ export async function fetchJiraTasks(
         jql,
         startAt,
         maxResults,
-        fields: ["summary", "status", "assignee", "updated", "created"],
+        fields: [
+          "summary",
+          "status",
+          "assignee",
+          "customfield_10613",
+          "updated",
+          "created",
+        ],
       },
       {
         auth: {
@@ -160,10 +167,8 @@ export async function fetchJiraTasks(
     startAt += maxResults;
   } while (true);
 
-  // Filter to SA team members only
-  return allIssues.filter((issue) =>
-    isSAMember(issue.fields.assignee?.displayName)
-  );
+  // Return all active issues (we'll filter the groups next)
+  return allIssues;
 }
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
@@ -196,38 +201,48 @@ export function computeStats(
 // ─── Grouping by SA ──────────────────────────────────────────────────────────
 
 /**
- * Group a flat list of Jira issues by assignee, splitting each group
- * into "What's Done" and "What's Next" based on status.
+ * Group issues by SA team member (customfield_10613).
+ * If an issue has multiple SA members, it appears under EACH of them.
  */
 export function groupTasksBySA(issues: JiraIssue[]): GroupedTasks[] {
   const grouped = new Map<string, GroupedTasks>();
 
   for (const issue of issues) {
-    const assigneeName =
-      issue.fields.assignee?.displayName?.trim() || "Unassigned";
+    const saMembers = issue.fields.customfield_10613;
+    if (!saMembers || saMembers.length === 0) continue;
 
-    if (!grouped.has(assigneeName)) {
-      grouped.set(assigneeName, {
-        assigneeName,
-        whatsDone: [],
-        whatsNext: [],
-      });
-    }
+    for (const sa of saMembers) {
+      const saName = sa.displayName?.trim() || sa.name;
 
-    const group = grouped.get(assigneeName)!;
-    const category = categorizeTask(issue.fields.status.name);
+      // Only include if this SA member is part of the SA team
+      if (!isSAMember(saName)) continue;
 
-    if (category === "done") {
-      group.whatsDone.push(issue);
-    } else {
-      group.whatsNext.push(issue);
+      if (!grouped.has(saName)) {
+        grouped.set(saName, {
+          assigneeName: saName,
+          whatsDone: [],
+          whatsNext: [],
+        });
+      }
+
+      const group = grouped.get(saName)!;
+      const category = categorizeTask(issue.fields.status.name);
+
+      if (category === "done") {
+        group.whatsDone.push(issue);
+      } else {
+        group.whatsNext.push(issue);
+      }
     }
   }
 
-  return Array.from(grouped.values());
+  // Sort alphabetically by SA name
+  return Array.from(grouped.values()).sort((a, b) =>
+    a.assigneeName.localeCompare(b.assigneeName)
+  );
 }
 
-/** @deprecated Use groupTasksBySA */
+/** @deprecated Use groupTasksBySA instead */
 export function groupTasksByAssignee(issues: JiraIssue[]): GroupedTasks[] {
   return groupTasksBySA(issues);
 }
