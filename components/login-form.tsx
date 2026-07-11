@@ -97,6 +97,16 @@ export function LoginForm({
             {loading ? "Memproses..." : "Masuk"}
           </Button>
         </Field>
+
+        <p className="text-center text-sm text-muted-foreground">
+          Belum punya akun?{" "}
+          <a
+            href="/register"
+            className="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+          >
+            Daftar di sini
+          </a>
+        </p>
       </FieldGroup>
     </form>
   );
