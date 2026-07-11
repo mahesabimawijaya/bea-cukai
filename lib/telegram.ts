@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { GroupedTasks, JiraIssue, ReportStats } from "./jira";
+import type { GroupedTasks, JiraIssue, ReportStats } from "@/types/jira";
 
 const TELEGRAM_API = "https://api.telegram.org";
 

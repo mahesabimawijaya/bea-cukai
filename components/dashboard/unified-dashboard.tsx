@@ -12,6 +12,7 @@ import {
   ComboboxEmpty,
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
+import { JiraIssue, ReportStats, GroupedTasks } from "@/types/jira";
 
 const MODULES = ["All Modules", "PIB", "PEB", "Manifes", "E-Faktur", "PFPD"];
 const PRIORITIES = ["All Priorities", "P1 Critical", "P2 High", "P3 Medium"];
@@ -28,14 +29,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import {
   BellRing,
-  FileText,
-  Clock,
-  BarChart3,
-  AlertTriangle,
   Bug,
   Phone,
-  Download,
 } from "lucide-react";
+import { JiraTab } from "./jira-tab";
+import { ReportingTab } from "./reporting-tab";
 
 export function UnifiedDashboard() {
   const [moduleSearch, setModuleSearch] = React.useState("");
@@ -64,15 +62,82 @@ export function UnifiedDashboard() {
     [statusSearch],
   );
 
-  const { register, setValue } = useForm({
+  const { register, setValue, watch } = useForm({
     defaultValues: {
       period: "2026-02-28",
       module: "All Modules",
       priority: "All Priorities",
       status: "All Status",
+      assignee: "",
       search: "",
     },
   });
+
+  const formValues = watch();
+
+  const [jiraData, setJiraData] = React.useState<{
+    issues: JiraIssue[];
+    grouped: GroupedTasks[];
+    stats: ReportStats | null;
+  }>({ issues: [], grouped: [], stats: null });
+  const [isLoadingJira, setIsLoadingJira] = React.useState(true);
+
+  React.useEffect(() => {
+    setIsLoadingJira(true);
+    fetch("/api/jira")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          setJiraData(data.data);
+        }
+      })
+      .catch((err) => console.error("Failed to load Jira data", err))
+      .finally(() => setIsLoadingJira(false));
+  }, []);
+
+  const filteredJiraIssues = React.useMemo(() => {
+    return jiraData.issues.filter((issue) => {
+      let matches = true;
+      if (formValues.search) {
+        matches =
+          matches &&
+          (issue.key.toLowerCase().includes(formValues.search.toLowerCase()) ||
+            issue.fields.summary
+              .toLowerCase()
+              .includes(formValues.search.toLowerCase()));
+      }
+      if (formValues.module && formValues.module !== "All Modules") {
+        const components = issue.fields.components?.map((c) => c.name) || [];
+        matches =
+          matches &&
+          (components.includes(formValues.module) ||
+            issue.fields.summary
+              .toLowerCase()
+              .includes(formValues.module.toLowerCase()));
+      }
+      if (formValues.priority && formValues.priority !== "All Priorities") {
+        const pName = issue.fields.priority?.name || "";
+        const pFilter = formValues.priority.split(" ")[0]; // e.g. "P1"
+        matches =
+          matches && pName.toLowerCase().includes(pFilter.toLowerCase());
+      }
+      if (formValues.status && formValues.status !== "All Status") {
+        const sFilter = formValues.status.toLowerCase();
+        // Custom matching for simpler dropdowns
+        if (sFilter === "open" || sFilter === "to do") {
+           matches = matches && ["open", "to do"].includes(issue.fields.status.name.toLowerCase());
+        } else {
+           matches = matches && issue.fields.status.name.toLowerCase().includes(sFilter);
+        }
+      }
+      if (formValues.assignee) {
+        const ass = issue.fields.assignee;
+        const assName = ass ? (ass.displayName || ass.name) : "Unassigned";
+        matches = matches && assName.toLowerCase().includes(formValues.assignee.toLowerCase());
+      }
+      return matches;
+    });
+  }, [jiraData.issues, formValues]);
 
   return (
     <div className="text-slate-800 font-sans bg-gradient-to-b from-[#f7fbff] to-[#eef5fb] min-h-screen">
@@ -214,10 +279,20 @@ export function UnifiedDashboard() {
               </div>
               <div className="flex flex-col gap-1.5 flex-1 min-w-[150px]">
                 <label className="text-[11px] text-slate-500 font-extrabold uppercase tracking-wide">
+                  PIC / Assignee
+                </label>
+                <Input
+                  placeholder="Filter by name..."
+                  {...register("assignee")}
+                  className="rounded-xl h-11 bg-white border-slate-300 w-full"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5 flex-1 min-w-[150px]">
+                <label className="text-[11px] text-slate-500 font-extrabold uppercase tracking-wide">
                   Search Ticket
                 </label>
                 <Input
-                  placeholder="Jira key / CC ticket ID"
+                  placeholder="Jira key / summary"
                   {...register("search")}
                   className="rounded-xl h-11 bg-white border-slate-300 w-full"
                 />
@@ -370,235 +445,7 @@ export function UnifiedDashboard() {
           </TabsContent>
 
           {/* 2. BUG FIXING JIRA */}
-          <TabsContent value="jira" className="outline-none">
-            <section className="bg-white border border-slate-200 rounded-[18px] shadow-sm p-5 md:p-6 mb-6">
-              <div className="flex flex-col md:flex-row justify-between md:items-start gap-4 mb-5">
-                <div>
-                  <h2 className="text-[22px] font-bold text-[#071b3a] tracking-tight m-0">
-                    Bug Fixing View — Jira
-                  </h2>
-                  <p className="mt-1.5 text-slate-500 text-[13px] leading-relaxed max-w-3xl">
-                    Tampilan khusus untuk memonitor pekerjaan bug fixing yang
-                    dicatat di Jira, mulai dari status development sampai
-                    deployment production.
-                  </p>
-                </div>
-                <Badge
-                  variant="secondary"
-                  className="bg-[#eef4ff] text-[#175cd3] rounded-full px-3 py-1.5 font-bold text-xs border-none hover:bg-[#eef4ff]"
-                >
-                  Development Tracking
-                </Badge>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-5 mb-5">
-                <div className="flex flex-col gap-3">
-                  <BarRow
-                    label="Done"
-                    value="156"
-                    percent={82}
-                    color="bg-gradient-to-r from-emerald-600 to-emerald-400"
-                  />
-                  <BarRow
-                    label="Deploy Production"
-                    value="42"
-                    percent={68}
-                    color="bg-gradient-to-r from-emerald-600 to-emerald-400"
-                  />
-                  <BarRow
-                    label="Code Review"
-                    value="35"
-                    percent={45}
-                    color="bg-gradient-to-r from-blue-600 to-blue-400"
-                  />
-                  <BarRow
-                    label="In Progress"
-                    value="29"
-                    percent={38}
-                    color="bg-gradient-to-r from-blue-600 to-blue-400"
-                  />
-                  <BarRow
-                    label="Pending"
-                    value="18"
-                    percent={26}
-                    color="bg-gradient-to-r from-amber-500 to-amber-300"
-                  />
-                  <BarRow
-                    label="Blocked"
-                    value="12"
-                    percent={18}
-                    color="bg-gradient-to-r from-red-600 to-red-400"
-                  />
-                </div>
-                <div className="border border-slate-200 rounded-xl overflow-hidden">
-                  <Table>
-                    <TableHeader className="bg-slate-50">
-                      <TableRow>
-                        <TableHead className="font-bold text-xs uppercase">
-                          Jira Key
-                        </TableHead>
-                        <TableHead className="font-bold text-xs uppercase">
-                          Module
-                        </TableHead>
-                        <TableHead className="font-bold text-xs uppercase">
-                          Summary
-                        </TableHead>
-                        <TableHead className="font-bold text-xs uppercase">
-                          Status
-                        </TableHead>
-                        <TableHead className="font-bold text-xs uppercase">
-                          Priority
-                        </TableHead>
-                        <TableHead className="font-bold text-xs uppercase">
-                          Owner
-                        </TableHead>
-                        <TableHead className="font-bold text-xs uppercase text-right">
-                          Action
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow>
-                        <TableCell className="font-bold text-blue-600">
-                          BUGS26-210
-                        </TableCell>
-                        <TableCell>Dashboard</TableCell>
-                        <TableCell className="text-slate-600">
-                          Notifikasi error saat sync data
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50 border-none shadow-none">
-                            Code Review
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50 border-none shadow-none">
-                            P2
-                          </Badge>
-                        </TableCell>
-                        <TableCell>Backend Dev</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                          >
-                            View Detail
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="font-bold text-blue-600">
-                          BUGS26-190
-                        </TableCell>
-                        <TableCell>API LPPT</TableCell>
-                        <TableCell className="text-slate-600">
-                          Response timeout dari microservice
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50 border-none shadow-none">
-                            Done
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50 border-none shadow-none">
-                            P3
-                          </Badge>
-                        </TableCell>
-                        <TableCell>Backend Dev</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                          >
-                            View Detail
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="font-bold text-blue-600">
-                          BUGS26-231
-                        </TableCell>
-                        <TableCell>Manifes</TableCell>
-                        <TableCell className="text-slate-600">
-                          Data tidak tersimpan setelah submit draft
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50 border-none shadow-none">
-                            Pending Deploy
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50 border-none shadow-none">
-                            P2
-                          </Badge>
-                        </TableCell>
-                        <TableCell>Release Mgr</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                          >
-                            View Detail
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="font-bold text-blue-600">
-                          BUGS26-244
-                        </TableCell>
-                        <TableCell>E-Faktur</TableCell>
-                        <TableCell className="text-slate-600">
-                          Crash pada perhitungan tarif spesifik
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-red-50 text-red-700 hover:bg-red-50 border-none shadow-none">
-                            Blocked
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className="bg-red-50 text-red-700 hover:bg-red-50 border-none shadow-none">
-                            P1
-                          </Badge>
-                        </TableCell>
-                        <TableCell>Sys Analyst</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                          >
-                            View Detail
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                <InfoCard
-                  title="Jira Key & Summary"
-                  desc="Menampilkan nomor issue, summary pekerjaan, module, sub-module, dan issue type."
-                />
-                <InfoCard
-                  title="Status Development"
-                  desc="Open, in progress, code review, staging, deploy production, done, pending, blocked."
-                />
-                <InfoCard
-                  title="Owner & Assignment"
-                  desc="Assignee developer, system analyst, tester, release manager, dan current PIC."
-                />
-                <InfoCard
-                  title="Release & Deployment"
-                  desc="Sprint, release version, deployment date, evidence, PR link, dan release note."
-                />
-              </div>
-            </section>
-          </TabsContent>
+          <JiraTab issues={filteredJiraIssues} stats={jiraData.stats} isLoading={isLoadingJira} />
 
           {/* 3. INCIDENT CUSTOMER CARE */}
           <TabsContent value="incident" className="outline-none">
@@ -933,181 +780,7 @@ export function UnifiedDashboard() {
           </TabsContent>
 
           {/* 5. REPORTING */}
-          <TabsContent value="reporting" className="outline-none">
-            <section className="bg-white border border-slate-200 rounded-[18px] shadow-sm p-5 md:p-6 mb-6">
-              <div className="flex flex-col md:flex-row justify-between md:items-start gap-4 mb-5">
-                <div>
-                  <h2 className="text-[22px] font-bold text-[#071b3a] tracking-tight m-0">
-                    Reporting
-                  </h2>
-                  <p className="mt-1.5 text-slate-500 text-[13px] leading-relaxed max-w-3xl">
-                    Reporting dibuat untuk kebutuhan daily operation, weekly
-                    review, dan monthly management report agar progres Jira dan
-                    Customer Care CEISA dapat dilaporkan dalam satu format.
-                  </p>
-                </div>
-                <Badge
-                  variant="secondary"
-                  className="bg-[#eef4ff] text-[#175cd3] rounded-full px-3 py-1.5 font-bold text-xs border-none hover:bg-[#eef4ff]"
-                >
-                  Management Report
-                </Badge>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
-                <ReportCard
-                  icon={<Clock className="w-5 h-5" />}
-                  title="Daily SLA Report"
-                  desc="Open ticket, at-risk ticket, breached SLA, no-update ticket, dan action hari ini."
-                />
-                <ReportCard
-                  icon={<BarChart3 className="w-5 h-5" />}
-                  title="Weekly Trend Report"
-                  desc="Trend ticket by source, module, category, priority, owner, dan status."
-                />
-                <ReportCard
-                  icon={<FileText className="w-5 h-5" />}
-                  title="Monthly Management Report"
-                  desc="Executive summary, total ticket, SLA achievement, top issue, dan key concern."
-                />
-                <ReportCard
-                  icon={<Bug className="w-5 h-5" />}
-                  title="Bug Release Report"
-                  desc="Jira done, deployed, pending deployment, blocked issue, release note, dan evidence."
-                />
-                <ReportCard
-                  icon={<AlertTriangle className="w-5 h-5" />}
-                  title="Incident & RCA Report"
-                  desc="Recurring incident, root cause, workaround, permanent fix, dan prevention action."
-                />
-              </div>
-
-              {/* Generated Reports Table */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden mb-5">
-                <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-                  <h3 className="font-bold text-[#071b3a] text-sm m-0">
-                    Recent Generated Reports
-                  </h3>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs bg-white"
-                  >
-                    <FileText className="w-3.5 h-3.5 mr-1.5" />
-                    Generate New Report
-                  </Button>
-                </div>
-                <Table>
-                  <TableHeader className="bg-white">
-                    <TableRow>
-                      <TableHead className="font-bold text-xs uppercase">
-                        Report Name
-                      </TableHead>
-                      <TableHead className="font-bold text-xs uppercase">
-                        Type
-                      </TableHead>
-                      <TableHead className="font-bold text-xs uppercase">
-                        Generated Date
-                      </TableHead>
-                      <TableHead className="font-bold text-xs uppercase">
-                        Generated By
-                      </TableHead>
-                      <TableHead className="font-bold text-xs uppercase text-right">
-                        Action
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow>
-                      <TableCell className="font-medium text-slate-800">
-                        Weekly Trend Report - W3 Feb 2026
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="text-slate-600">
-                          Weekly
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        28 Feb 2026, 09:12 AM
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        System (Auto)
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-blue-600"
-                        >
-                          <Download className="w-4 h-4 mr-1.5" /> Download
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell className="font-medium text-slate-800">
-                        Incident & RCA Report - P1 E-Faktur
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="text-slate-600">
-                          Ad-hoc
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        27 Feb 2026, 14:30 PM
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        Budi Setiawan
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-blue-600"
-                        >
-                          <Download className="w-4 h-4 mr-1.5" /> Download
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell className="font-medium text-slate-800">
-                        Daily SLA Report - 27 Feb 2026
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="text-slate-600">
-                          Daily
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        27 Feb 2026, 08:00 AM
-                      </TableCell>
-                      <TableCell className="text-slate-600">
-                        System (Auto)
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-blue-600"
-                        >
-                          <Download className="w-4 h-4 mr-1.5" /> Download
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
-              </div>
-
-              <div className="p-4 md:p-5 bg-[#071b3a] text-white rounded-2xl flex flex-col md:flex-row justify-between gap-4 items-center">
-                <b className="whitespace-nowrap">Output utama dashboard:</b>
-                <span className="text-[#b8cff1] text-[13px] leading-relaxed">
-                  Satu dashboard untuk melihat kondisi Bug Fixing dan Incident
-                  secara terpisah namun tetap terpusat, sehingga tim tidak perlu
-                  membuka Jira dan Customer Care CEISA secara manual untuk
-                  mengejar SLA dan membuat laporan.
-                </span>
-              </div>
-            </section>
-          </TabsContent>
+          <ReportingTab grouped={jiraData.grouped} stats={jiraData.stats} isLoading={isLoadingJira} />
         </Tabs>
       </div>
     </div>
@@ -1200,26 +873,6 @@ function SLACard({
           style={{ width: `${percent}%` }}
         />
       </div>
-    </div>
-  );
-}
-
-function ReportCard({
-  icon,
-  title,
-  desc,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  desc: string;
-}) {
-  return (
-    <div className="border border-slate-200 rounded-2xl bg-white p-4 flex flex-col items-start min-h-[150px] shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-shadow hover:shadow-md">
-      <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mb-3">
-        {icon}
-      </div>
-      <h4 className="m-0 mb-2 font-bold text-[#071b3a] text-[15px]">{title}</h4>
-      <p className="m-0 text-slate-500 text-xs leading-relaxed">{desc}</p>
     </div>
   );
 }

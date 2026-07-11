@@ -25,14 +25,17 @@ config({ path: resolve(rootDir, ".env.local"), override: true });
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
 const JIRA_USERNAME = process.env.JIRA_USERNAME;
 const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
+const JIRA_PAT = process.env.JIRA_PAT;
 const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
 const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 
 // Validate required env vars
 const missing = [];
 if (!JIRA_BASE_URL) missing.push("JIRA_BASE_URL");
-if (!JIRA_USERNAME) missing.push("JIRA_USERNAME");
-if (!JIRA_PASSWORD) missing.push("JIRA_PASSWORD");
+if (!JIRA_PAT && (!JIRA_USERNAME || !JIRA_PASSWORD)) {
+  console.error(`❌ Missing Jira credentials. Provide either JIRA_PAT or (JIRA_USERNAME and JIRA_PASSWORD).`);
+  process.exit(1);
+}
 if (!TELE_BOT_TOKEN) missing.push("TELE_BOT_TOKEN");
 if (!TELE_GROUP_ID) missing.push("TELE_GROUP_ID");
 
@@ -51,6 +54,10 @@ const WHATS_NEXT_STATUSES = new Set([
   "to do",
   "reopened",
   "pending",
+  "code review",
+  "qc bc - testing staging",
+  "staging",
+  "deploy development",
 ]);
 
 function categorizeTask(statusName) {
@@ -88,7 +95,9 @@ async function fetchJiraTasks() {
   const allIssues = [];
   let startAt = 0;
   const maxResults = 50;
-  const auth = Buffer.from(`${JIRA_USERNAME}:${JIRA_PASSWORD}`).toString("base64");
+  const authHeader = JIRA_PAT 
+    ? `Bearer ${JIRA_PAT}`
+    : `Basic ${Buffer.from(`${JIRA_USERNAME}:${JIRA_PASSWORD}`).toString("base64")}`;
 
   console.log("📡 Fetching issues from Jira...");
 
@@ -97,7 +106,7 @@ async function fetchJiraTasks() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
+        Authorization: authHeader,
       },
       body: JSON.stringify({
         jql,
@@ -214,67 +223,58 @@ function formatDateTime() {
   };
 }
 
-function buildProgressBar(pct, width) {
-  const filled = Math.round((pct / 100) * width);
-  return "█".repeat(filled) + "░".repeat(width - filled);
-}
 
-function formatSummaryMessage(stats) {
-  const { day, date, time } = formatDateTime();
-  const progressPct = stats.total > 0 ? Math.round((stats.doneDeployed / stats.total) * 100) : 0;
-  const progressBar = buildProgressBar(progressPct, 12);
-  const rows = [
-    ["Total Active Issues", stats.total],
-    ["Done / Deployed    ", stats.doneDeployed],
-    ["In Progress        ", stats.inProgress],
-    ["Review / Testing   ", stats.reviewTesting],
-    ["Pending            ", stats.pending],
-    ["Task To Do         ", stats.taskToDo],
-    ...(stats.other > 0 ? [["Lainnya            ", stats.other]] : []),
-    ["Developer Aktif    ", stats.activeAssignees],
-  ];
-  const tableLines = rows.map(([l, v]) => `${l}: ${v}`).join("\n");
-  return (
-    `📊 <b>BUGS26 — Daily Progress Report</b>\n` +
-    `📅 ${day}, ${date} | ${time}\n` +
-    `\n` +
-    `<b>📈 SUMMARY</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `<code>${tableLines}</code>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `📦 Progress Selesai  ${progressBar} ${progressPct}%\n` +
-    `\n` +
-    `⬇️ <i>Detail per developer di bawah ini</i>`
-  );
+
+
+function checkSLA(task) {
+  const status = task.fields.status.name.toLowerCase();
+  if (status.includes("to do") || status.includes("open") || status === "task to do") {
+    const updatedDate = new Date(task.fields.updated);
+    const diffHours = (new Date().getTime() - updatedDate.getTime()) / (1000 * 60 * 60);
+    if (diffHours >= 1) {
+      return ` [⚠️ SLA BREACH: ${Math.floor(diffHours)} Jam]`;
+    }
+  }
+  return "";
 }
 
 function formatDetailMessages(groups) {
   const MAX_LEN = 4000;
   const messages = [];
-  const pageHeader = `📋 <b>BUGS26 — Detail per Developer</b>\n`;
+  const pageHeader = `📋 <b>Detail per PIC</b>\n`;
   let currentMessage = pageHeader;
 
   for (const group of groups) {
-    if (group.whatsDone.length === 0 && group.whatsNext.length === 0) continue;
+    const activeTasks = group.whatsNext;
+
+    if (activeTasks.length === 0) continue;
+
+    // Group tasks by exact status name
+    const tasksByStatus = {};
+    activeTasks.forEach((t) => {
+      const st = t.fields.status.name;
+      if (!tasksByStatus[st]) tasksByStatus[st] = [];
+      tasksByStatus[st].push(t);
+    });
+
+    const summaryParts = [];
+    for (const [st, tasks] of Object.entries(tasksByStatus)) {
+      summaryParts.push(`${st}: ${tasks.length}`);
+    }
 
     const sectionHeader =
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
       `👤 <b>${escapeHtml(group.assigneeName)}</b>\n` +
+      `<i>(${summaryParts.join(" | ")})</i>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     const lines = [];
-
-    if (group.whatsDone.length > 0) {
-      lines.push(`\n<b>What's Done</b> (${group.whatsDone.length})`);
-      for (const task of group.whatsDone) {
-        lines.push(`- [${task.key}] (${formatStatusDisplay(task.fields.status.name)}) || ${escapeHtml(task.fields.summary)}`);
-      }
-    }
-
-    if (group.whatsNext.length > 0) {
-      lines.push(`\n<b>What's Next</b> (${group.whatsNext.length})`);
-      for (const task of group.whatsNext) {
-        lines.push(`- [${task.key}] (${formatStatusDisplay(task.fields.status.name)}) || ${escapeHtml(task.fields.summary)}`);
+    
+    for (const [st, tasks] of Object.entries(tasksByStatus)) {
+      lines.push(`\n<b>[${escapeHtml(st)}]</b>`);
+      for (const task of tasks) {
+        const slaWarning = checkSLA(task);
+        lines.push(`- [${task.key}] ${escapeHtml(task.fields.summary)}${slaWarning}`);
       }
     }
 
@@ -346,15 +346,28 @@ async function runReport() {
     const grouped = groupTasksBySA(issues);
     console.log(`👥 Grouped into ${grouped.length} SA member(s)`);
 
-    // 3. Compute stats
-    const stats = computeStats(issues, grouped);
-    console.log(`📊 Stats: Done=${stats.doneDeployed} | InProgress=${stats.inProgress} | Review=${stats.reviewTesting} | Pending=${stats.pending} | ToDo=${stats.taskToDo}`);
+    // 3. Compute stats for SA ONLY
+    const saIssueKeys = new Set();
+    grouped.forEach((g) => {
+      g.whatsDone.forEach((i) => saIssueKeys.add(i.key));
+      g.whatsNext.forEach((i) => saIssueKeys.add(i.key));
+    });
+    const saIssues = issues.filter((i) => saIssueKeys.has(i.key));
 
-    // 4. Build messages: summary first, then detail pages
-    const summaryMsg = formatSummaryMessage(stats);
+    const stats = computeStats(saIssues, grouped);
+    console.log(`📊 Stats: InProgress=${stats.inProgress} | Review=${stats.reviewTesting} | ToDo=${stats.taskToDo}`);
+
+    // 4. Build messages: detail pages only
+    const { day, date, time } = formatDateTime();
     const detailMsgs = formatDetailMessages(grouped);
-    const allMessages = [summaryMsg, ...detailMsgs];
-    console.log(`📝 Formatted into ${allMessages.length} message(s) (1 summary + ${detailMsgs.length} detail)`);
+    
+    // Add header to the first message
+    if (detailMsgs.length > 0) {
+      detailMsgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + detailMsgs[0];
+    }
+    
+    const allMessages = [...detailMsgs];
+    console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
     // 5. Send to Telegram
     for (let i = 0; i < allMessages.length; i++) {

@@ -1,54 +1,7 @@
 import axios from "axios";
+import { JiraIssue, GroupedTasks, ReportStats } from "@/types/jira";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-export interface JiraUser {
-  displayName: string;
-  name: string;
-}
-
-export interface JiraIssue {
-  key: string;
-  fields: {
-    summary: string;
-    status: {
-      name: string;
-      statusCategory: {
-        key: string;
-        name: string;
-      };
-    };
-    assignee: JiraUser | null;
-    /** SA team members — Jira custom field customfield_10613 */
-    customfield_10613: JiraUser[] | null;
-    updated: string;
-    created: string;
-  };
-}
-
-export interface GroupedTasks {
-  assigneeName: string;
-  whatsDone: JiraIssue[];
-  whatsNext: JiraIssue[];
-}
-
-export interface ReportStats {
-  total: number;
-  /** Done, Deploy Production, Closed — final states */
-  doneDeployed: number;
-  /** In Progress */
-  inProgress: number;
-  /** Code Review, QC BC - Testing Staging, Staging, Deploy Development */
-  reviewTesting: number;
-  /** Pending */
-  pending: number;
-  /** Task To Do, Open, To Do */
-  taskToDo: number;
-  /** Everything else (Revisi, Reopened, etc.) */
-  other: number;
-  /** Number of unique SA members with at least 1 task */
-  activeAssignees: number;
-}
 
 interface JiraSearchResponse {
   startAt: number;
@@ -66,6 +19,10 @@ const WHATS_NEXT_STATUSES = new Set([
   "to do",
   "reopened",
   "pending",
+  "code review",
+  "qc bc - testing staging",
+  "staging",
+  "deploy development",
 ]);
 
 export function categorizeTask(statusName: string): "done" | "next" {
@@ -148,16 +105,24 @@ export async function fetchJiraTasks(
           "status",
           "assignee",
           "customfield_10613",
+          "priority",
+          "components",
+          "issuetype",
           "updated",
           "created",
         ],
       },
       {
-        auth: {
-          username: process.env.JIRA_USERNAME!,
-          password: process.env.JIRA_PASSWORD!,
+        headers: {
+          "Content-Type": "application/json",
+          ...(process.env.JIRA_PAT
+            ? { Authorization: `Bearer ${process.env.JIRA_PAT}` }
+            : {
+                Authorization: `Basic ${Buffer.from(
+                  `${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`
+                ).toString("base64")}`,
+              }),
         },
-        headers: { "Content-Type": "application/json" },
       }
     );
 
@@ -201,6 +166,43 @@ export function computeStats(
 // ─── Grouping by SA ──────────────────────────────────────────────────────────
 
 /**
+ * Group issues by Assignee.
+ * If an issue is unassigned, it will be grouped under "Unassigned".
+ */
+export function groupTasksByAssignee(issues: JiraIssue[]): GroupedTasks[] {
+  const grouped = new Map<string, GroupedTasks>();
+
+  for (const issue of issues) {
+    const assignee = issue.fields.assignee;
+    const name = assignee ? (assignee.displayName?.trim() || assignee.name) : "Unassigned";
+
+    if (!grouped.has(name)) {
+      grouped.set(name, {
+        assigneeName: name,
+          whatsDone: [],
+          whatsNext: [],
+        });
+      }
+
+      const group = grouped.get(name)!;
+      const category = categorizeTask(issue.fields.status.name);
+
+      if (category === "done") {
+        group.whatsDone.push(issue);
+      } else {
+        group.whatsNext.push(issue);
+      }
+  }
+
+  // Sort alphabetically by assignee name (put Unassigned at the end)
+  return Array.from(grouped.values()).sort((a, b) => {
+    if (a.assigneeName === "Unassigned") return 1;
+    if (b.assigneeName === "Unassigned") return -1;
+    return a.assigneeName.localeCompare(b.assigneeName);
+  });
+}
+
+/**
  * Group issues by SA team member (customfield_10613).
  * If an issue has multiple SA members, it appears under EACH of them.
  */
@@ -240,9 +242,4 @@ export function groupTasksBySA(issues: JiraIssue[]): GroupedTasks[] {
   return Array.from(grouped.values()).sort((a, b) =>
     a.assigneeName.localeCompare(b.assigneeName)
   );
-}
-
-/** @deprecated Use groupTasksBySA instead */
-export function groupTasksByAssignee(issues: JiraIssue[]): GroupedTasks[] {
-  return groupTasksBySA(issues);
 }
