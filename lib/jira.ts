@@ -103,7 +103,7 @@ function classifyStatus(
  * contains ANY of these keywords.
  */
 export const SA_TEAM_KEYWORDS = [
-  "willy",       // Willy Taufik
+  "willy taufik", // Willy Taufik
   "farisan",     // M Farisan
   "rifqi",       // Rifqi Zhafar
   "ilyas",       // M Ilyas
