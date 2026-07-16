@@ -1,18 +1,21 @@
 /**
- * Standalone cron script for sending daily Jira reports to Telegram.
+ * Standalone cron script for sending daily Jira reports to WhatsApp.
  *
  * Usage:
- *   node scripts/cron-telegram.mjs          # Start scheduler (16:00 WIB, Mon-Fri)
- *   node scripts/cron-telegram.mjs --once   # Run once immediately, then exit
+ *   node scripts/cron-whatsapp.mjs          # Start scheduler (16:00 WIB, Mon-Fri)
+ *   node scripts/cron-whatsapp.mjs --once   # Run once immediately, then exit
  *
- * This script is self-contained — it does NOT depend on the Next.js server.
- * It reads .env and .env.local from the project root.
+ * Note: On first run, it will display a QR code in the terminal.
+ * Scan it with your WhatsApp app. The session will be saved locally.
  */
 
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
+import pkg from "whatsapp-web.js";
+const { Client, LocalAuth } = pkg;
+import qrcode from "qrcode-terminal";
 
 // ─── Load Environment ───────────────────────────────────────────────────────
 
@@ -26,8 +29,10 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
 const JIRA_USERNAME = process.env.JIRA_USERNAME;
 const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
 const JIRA_PAT = process.env.JIRA_PAT;
-const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
-const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
+const WA_GROUP_ID = process.env.WA_GROUP_ID || process.env.TELE_GROUP_ID; // Fallback to TELE_GROUP_ID if WA_GROUP_ID is missing
+
+// IMPORTANT: Adjust this if you use Edge or a different Chrome path
+const CHROME_EXECUTABLE_PATH = process.env.CHROME_EXECUTABLE_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 // Validate required env vars
 const missing = [];
@@ -38,15 +43,73 @@ if (!JIRA_PAT && (!JIRA_USERNAME || !JIRA_PASSWORD)) {
   );
   process.exit(1);
 }
-if (!TELE_BOT_TOKEN) missing.push("TELE_BOT_TOKEN");
-if (!TELE_GROUP_ID) missing.push("TELE_GROUP_ID");
+if (!WA_GROUP_ID) missing.push("WA_GROUP_ID (or TELE_GROUP_ID)");
 
 if (missing.length > 0) {
   console.error(
     `❌ Missing required environment variables: ${missing.join(", ")}`,
   );
-  console.error("   Make sure .env or .env.local is configured correctly.");
   process.exit(1);
+}
+
+// ─── WhatsApp Setup ─────────────────────────────────────────────────────────
+
+const whatsappClient = new Client({
+  authStrategy: new LocalAuth(),
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+  },
+  puppeteer: {
+    executablePath: CHROME_EXECUTABLE_PATH,
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  }
+});
+
+let isWhatsAppReady = false;
+
+whatsappClient.on('qr', (qr) => {
+  console.log('\n📲 Scan this QR code in WhatsApp to log in:\n');
+  qrcode.generate(qr, { small: true });
+});
+
+whatsappClient.on('authenticated', () => {
+    console.log('✅ WhatsApp authenticated successfully!');
+});
+
+whatsappClient.on('auth_failure', msg => {
+    console.error('❌ WhatsApp authentication failure:', msg);
+});
+
+whatsappClient.on('loading_screen', (percent, message) => {
+    console.log(`🔄 WhatsApp Loading: ${percent}% - ${message}`);
+});
+
+whatsappClient.on('disconnected', (reason) => {
+    console.log('❌ WhatsApp Client was logged out or disconnected:', reason);
+    isWhatsAppReady = false;
+});
+
+whatsappClient.on('ready', () => {
+  console.log('✅ WhatsApp Client is ready!');
+  isWhatsAppReady = true;
+});
+
+// Helper to initialize and wait for ready
+async function ensureWhatsAppReady() {
+  if (isWhatsAppReady) return;
+  console.log("Initializing WhatsApp Client...");
+  await whatsappClient.initialize();
+  
+  return new Promise((resolve) => {
+    const checkReady = setInterval(() => {
+      if (isWhatsAppReady) {
+        clearInterval(checkReady);
+        resolve();
+      }
+    }, 1000);
+  });
 }
 
 // ─── Status Categorization ──────────────────────────────────────────────────
@@ -74,31 +137,18 @@ function categorizeTask(statusName) {
 // ─── SA Team Filter ──────────────────────────────────────────────────────────
 
 const SA_TEAM_KEYWORDS = [
-  "willy taufik", // Willy Taufik
-  "farisan", // M Farisan
-  "rifqi", // Rifqi Zhafar
-  "ilyas", // M Ilyas
-  "rahmat", // Rahmat Hidayat
-  "nitha", // Nitha Huwaida
-  "auliya", // Auliya Barendra
-  "akbar", // Akbar Maulana Fikri
-  "lalang", // Lalang Indra
-  "sugianto", // Sugianto
-  "laksito", // Laksito
+  "willy taufik",
+  "farisan",
+  "rifqi",
+  "ilyas",
+  "rahmat",
+  "nitha",
+  "auliya",
+  "akbar",
+  "lalang",
+  "sugianto",
+  "laksito",
 ];
-// const SA_TEAM_KEYWORDS = [
-//   // "willy taufik", // Willy Taufik
-//   "farisan", // M Farisan
-//   // "rifqi",       // Rifqi Zhafar
-//   // "ilyas",       // M Ilyas
-//   // "rahmat",      // Rahmat Hidayat
-//   // "nitha",       // Nitha Huwaida
-//   // "auliya",      // Auliya Barendra
-//   // "akbar",       // Akbar Maulana Fikri
-//   // "lalang",      // Lalang Indra
-//   // "sugianto",    // Sugianto
-//   // "laksito",     // Laksito
-// ];
 
 function isSAMember(displayName) {
   if (!displayName) return false;
@@ -159,7 +209,6 @@ async function fetchJiraTasks() {
     startAt += maxResults;
   }
 
-  // Return all active issues (we'll filter the groups next)
   return allIssues;
 }
 
@@ -243,13 +292,10 @@ function computeStats(issues, groups) {
   return stats;
 }
 
-// ─── Telegram Formatting ────────────────────────────────────────────────────
+// ─── WhatsApp Formatting ────────────────────────────────────────────────────
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function escapeWhatsApp(text) {
+  return text.replace(/\*/g, '').replace(/_/g, '').replace(/```/g, '');
 }
 
 function formatStatusDisplay(statusName) {
@@ -261,18 +307,8 @@ function formatDateTime() {
   const now = new Date();
   const days = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
   const months = [
-    "Januari",
-    "Februari",
-    "Maret",
-    "April",
-    "Mei",
-    "Juni",
-    "Juli",
-    "Agustus",
-    "September",
-    "Oktober",
-    "November",
-    "Desember",
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
   ];
   const wib = new Date(now.getTime() + 7 * 60 * 60 * 1000);
   const hh = String(wib.getUTCHours()).padStart(2, "0");
@@ -306,7 +342,7 @@ function getStatusEmoji(status) {
 function formatDetailMessages(groups) {
   const MAX_LEN = 4000;
   const messages = [];
-  const pageHeader = `📋 <b>Detail per PIC</b>\n`;
+  const pageHeader = `📋 *Detail per PIC*\n`;
   let currentMessage = pageHeader;
 
   for (const group of groups) {
@@ -314,7 +350,6 @@ function formatDetailMessages(groups) {
 
     if (activeTasks.length === 0) continue;
 
-    // Group tasks by exact status name
     const tasksByStatus = {};
     activeTasks.forEach((t) => {
       const st = t.fields.status.name;
@@ -330,18 +365,18 @@ function formatDetailMessages(groups) {
 
     const sectionHeader =
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>${escapeHtml(group.assigneeName)}</b>\n\n` +
-      `<i>${summaryParts.join("\n")}</i>\n` +
+      `👤 *${escapeWhatsApp(group.assigneeName)}*\n\n` +
+      `_${summaryParts.join("\n")}_\n` +
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     const lines = [];
 
     for (const [st, tasks] of Object.entries(tasksByStatus)) {
       const emoji = getStatusEmoji(st);
-      lines.push(`\n<b>${escapeHtml(st)} ${emoji}</b>`);
+      lines.push(`\n*${escapeWhatsApp(st)} ${emoji}*`);
       for (const task of tasks) {
         lines.push(
-          `- [${task.key}] ${escapeHtml(task.fields.summary)}`,
+          `- [${task.key}] ${escapeWhatsApp(task.fields.summary)}`,
         );
       }
     }
@@ -372,29 +407,11 @@ function formatDetailMessages(groups) {
   return messages;
 }
 
-// ─── Telegram API ───────────────────────────────────────────────────────────
+// ─── WhatsApp API ───────────────────────────────────────────────────────────
 
-async function sendTelegramMessage(text) {
-  const response = await fetch(
-    `https://api.telegram.org/bot${TELE_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELE_GROUP_ID,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Telegram API error: ${response.status} — ${errorText}`);
-  }
-
-  return response.json();
+async function sendWhatsAppMessage(text) {
+  const formattedChatId = WA_GROUP_ID.includes('@') ? WA_GROUP_ID : `${WA_GROUP_ID}@c.us`; 
+  await whatsappClient.sendMessage(formattedChatId, text);
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -406,15 +423,12 @@ async function runReport() {
   console.log(`\n🕐 [${timestamp}] Starting daily report...`);
 
   try {
-    // 1. Fetch from Jira
     const issues = await fetchJiraTasks();
     console.log(`✅ Fetched ${issues.length} issues total`);
 
-    // 2. Group by SA team member (customfield_10613)
     const grouped = groupTasksBySA(issues);
     console.log(`👥 Grouped into ${grouped.length} SA member(s)`);
 
-    // 3. Compute stats for SA ONLY
     const saIssueKeys = new Set();
     grouped.forEach((g) => {
       g.whatsDone.forEach((i) => saIssueKeys.add(i.key));
@@ -427,7 +441,6 @@ async function runReport() {
       `📊 Stats: InProgress=${stats.inProgress} | Review=${stats.reviewTesting} | ToDo=${stats.taskToDo}`,
     );
 
-    // 4. Build messages: detail pages only
     const cukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value === 'Cukai');
     const nonCukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value !== 'Cukai');
 
@@ -441,7 +454,7 @@ async function runReport() {
     if (cukaiGrouped.length > 0) {
       const msgs = formatDetailMessages(cukaiGrouped);
       if (msgs.length > 0) {
-        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+        msgs[0] = `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` + msgs[0];
         allMessages.push(...msgs);
       }
     }
@@ -450,18 +463,17 @@ async function runReport() {
     if (nonCukaiGrouped.length > 0) {
       const msgs = formatDetailMessages(nonCukaiGrouped);
       if (msgs.length > 0) {
-        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+        msgs[0] = `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` + msgs[0];
         allMessages.push(...msgs);
       }
     }
     console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
-    // 5. Send to Telegram
     for (let i = 0; i < allMessages.length; i++) {
-      await sendTelegramMessage(allMessages[i]);
+      await sendWhatsAppMessage(allMessages[i]);
       console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
       if (i < allMessages.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 1500)); // Slightly longer delay for WA
       }
     }
 
@@ -476,34 +488,47 @@ async function runReport() {
 
 const isOnce = process.argv.includes("--once");
 
-if (isOnce) {
-  console.log("🚀 Running one-shot report...\n");
-  runReport()
-    .then(() => {
-      console.log("\n🏁 Done.");
-      process.exit(0);
-    })
-    .catch((e) => {
-      console.error(e);
-      process.exit(1);
-    });
-} else {
-  // Schedule: 16:00 WIB, Monday–Friday
-  const schedule = "0 16 * * 1-5";
+async function main() {
+  // Always initialize WhatsApp and wait for ready event before running reports
+  await ensureWhatsAppReady();
 
-  console.log("╔══════════════════════════════════════════╗");
-  console.log("║  📬 Telegram Bot Scheduler — BUGS26     ║");
-  console.log("╠══════════════════════════════════════════╣");
-  console.log(`║  Schedule : ${schedule} (Mon-Fri 16:00 WIB) ║`);
-  console.log(`║  Chat ID  : ${TELE_GROUP_ID?.substring(0, 20).padEnd(20)} ║`);
-  console.log("╚══════════════════════════════════════════╝");
-  console.log("\nPress Ctrl+C to stop.\n");
+  if (isOnce) {
+    console.log("🚀 Running one-shot report...\n");
+    runReport()
+      .then(async () => {
+        console.log("\n🏁 Done.");
+        await whatsappClient.destroy();
+        process.exit(0);
+      })
+      .catch(async (e) => {
+        console.error(e);
+        await whatsappClient.destroy();
+        process.exit(1);
+      });
+  } else {
+    // Schedule: 16:00 WIB, Monday–Friday
+    const schedule = "0 16 * * 1-5";
 
-  cron.schedule(
-    schedule,
-    () => {
-      runReport();
-    },
-    { timezone: "Asia/Jakarta" },
-  );
+    console.log("╔══════════════════════════════════════════╗");
+    console.log("║  📬 WhatsApp Bot Scheduler — BUGS26      ║");
+    console.log("╠══════════════════════════════════════════╣");
+    console.log(`║  Schedule : ${schedule} (Mon-Fri 16:00 WIB) ║`);
+    console.log(`║  Chat ID  : ${WA_GROUP_ID?.substring(0, 20).padEnd(20)} ║`);
+    console.log("╚══════════════════════════════════════════╝");
+    console.log("\nPress Ctrl+C to stop.\n");
+
+    cron.schedule(
+      schedule,
+      () => {
+        runReport();
+      },
+      { timezone: "Asia/Jakarta" },
+    );
+  }
 }
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+main();

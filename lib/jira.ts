@@ -108,9 +108,11 @@ export async function fetchJiraTasks(
           "priority",
           "components",
           "issuetype",
+          "customfield_10619",
           "updated",
           "created",
         ],
+        expand: ["changelog"],
       },
       {
         headers: {
@@ -210,15 +212,23 @@ export function groupTasksBySA(issues: JiraIssue[]): GroupedTasks[] {
   const grouped = new Map<string, GroupedTasks>();
 
   for (const issue of issues) {
-    const saMembers = issue.fields.customfield_10613;
-    if (!saMembers || saMembers.length === 0) continue;
+    const saNames = new Set<string>();
+    
+    if (issue.fields.assignee) {
+      const assigneeName = issue.fields.assignee.displayName?.trim() || issue.fields.assignee.name;
+      if (isSAMember(assigneeName)) saNames.add(assigneeName);
+    }
+    
+    if (issue.fields.customfield_10613) {
+      for (const sa of issue.fields.customfield_10613) {
+        const saName = sa.displayName?.trim() || sa.name;
+        if (isSAMember(saName)) saNames.add(saName);
+      }
+    }
 
-    for (const sa of saMembers) {
-      const saName = sa.displayName?.trim() || sa.name;
+    if (saNames.size === 0) continue;
 
-      // Only include if this SA member is part of the SA team
-      if (!isSAMember(saName)) continue;
-
+    for (const saName of saNames) {
       if (!grouped.has(saName)) {
         grouped.set(saName, {
           assigneeName: saName,
