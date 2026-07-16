@@ -33,14 +33,18 @@ const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 const missing = [];
 if (!JIRA_BASE_URL) missing.push("JIRA_BASE_URL");
 if (!JIRA_PAT && (!JIRA_USERNAME || !JIRA_PASSWORD)) {
-  console.error(`❌ Missing Jira credentials. Provide either JIRA_PAT or (JIRA_USERNAME and JIRA_PASSWORD).`);
+  console.error(
+    `❌ Missing Jira credentials. Provide either JIRA_PAT or (JIRA_USERNAME and JIRA_PASSWORD).`,
+  );
   process.exit(1);
 }
 if (!TELE_BOT_TOKEN) missing.push("TELE_BOT_TOKEN");
 if (!TELE_GROUP_ID) missing.push("TELE_GROUP_ID");
 
 if (missing.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missing.join(", ")}`);
+  console.error(
+    `❌ Missing required environment variables: ${missing.join(", ")}`,
+  );
   console.error("   Make sure .env or .env.local is configured correctly.");
   process.exit(1);
 }
@@ -58,6 +62,7 @@ const WHATS_NEXT_STATUSES = new Set([
   "qc bc - testing staging",
   "staging",
   "deploy development",
+  "done",
 ]);
 
 function categorizeTask(statusName) {
@@ -70,17 +75,30 @@ function categorizeTask(statusName) {
 
 const SA_TEAM_KEYWORDS = [
   "willy taufik", // Willy Taufik
-  "farisan",     // M Farisan
-  "rifqi",       // Rifqi Zhafar
-  "ilyas",       // M Ilyas
-  "rahmat",      // Rahmat Hidayat
-  "nitha",       // Nitha Huwaida
-  "auliya",      // Auliya Barendra
-  "akbar",       // Akbar Maulana Fikri
-  "lalang",      // Lalang Indra
-  "sugianto",    // Sugianto
-  "laksito",     // Laksito
+  "farisan", // M Farisan
+  "rifqi", // Rifqi Zhafar
+  "ilyas", // M Ilyas
+  "rahmat", // Rahmat Hidayat
+  "nitha", // Nitha Huwaida
+  "auliya", // Auliya Barendra
+  "akbar", // Akbar Maulana Fikri
+  "lalang", // Lalang Indra
+  "sugianto", // Sugianto
+  "laksito", // Laksito
 ];
+// const SA_TEAM_KEYWORDS = [
+//   // "willy taufik", // Willy Taufik
+//   "farisan", // M Farisan
+//   // "rifqi",       // Rifqi Zhafar
+//   // "ilyas",       // M Ilyas
+//   // "rahmat",      // Rahmat Hidayat
+//   // "nitha",       // Nitha Huwaida
+//   // "auliya",      // Auliya Barendra
+//   // "akbar",       // Akbar Maulana Fikri
+//   // "lalang",      // Lalang Indra
+//   // "sugianto",    // Sugianto
+//   // "laksito",     // Laksito
+// ];
 
 function isSAMember(displayName) {
   if (!displayName) return false;
@@ -91,11 +109,11 @@ function isSAMember(displayName) {
 // ─── Jira API ───────────────────────────────────────────────────────────────
 
 async function fetchJiraTasks() {
-  const jql = `project = 'BUGS26' AND (status NOT IN (Done, Closed) OR updatedDate >= startOfDay()) ORDER BY assignee ASC, updated DESC`;
+  const jql = `project = 'BUGS26' AND (updatedDate >= startOfDay() OR status = 'In Progress') ORDER BY assignee ASC, updated DESC`;
   const allIssues = [];
   let startAt = 0;
   const maxResults = 50;
-  const authHeader = JIRA_PAT 
+  const authHeader = JIRA_PAT
     ? `Bearer ${JIRA_PAT}`
     : `Basic ${Buffer.from(`${JIRA_USERNAME}:${JIRA_PASSWORD}`).toString("base64")}`;
 
@@ -112,7 +130,17 @@ async function fetchJiraTasks() {
         jql,
         startAt,
         maxResults,
-        fields: ["summary", "status", "assignee", "customfield_10613", "updated", "created"],
+        fields: [
+          "summary",
+          "status",
+          "assignee",
+          "assignee",
+          "customfield_10613",
+          "customfield_10619",
+          "updated",
+          "created",
+        ],
+        expand: ["changelog"],
       }),
     });
 
@@ -123,7 +151,9 @@ async function fetchJiraTasks() {
 
     const data = await response.json();
     allIssues.push(...data.issues);
-    console.log(`   Fetched ${allIssues.length}/${data.total} issues (page ${Math.floor(startAt / maxResults) + 1})`);
+    console.log(
+      `   Fetched ${allIssues.length}/${data.total} issues (page ${Math.floor(startAt / maxResults) + 1})`,
+    );
 
     if (startAt + maxResults >= data.total) break;
     startAt += maxResults;
@@ -139,15 +169,23 @@ function groupTasksBySA(issues) {
   const grouped = new Map();
 
   for (const issue of issues) {
-    const saMembers = issue.fields.customfield_10613;
-    if (!saMembers || saMembers.length === 0) continue;
+    const saNames = new Set();
+    
+    if (issue.fields.assignee) {
+      const assigneeName = issue.fields.assignee.displayName?.trim() || issue.fields.assignee.name;
+      if (isSAMember(assigneeName)) saNames.add(assigneeName);
+    }
+    
+    if (issue.fields.customfield_10613) {
+      for (const sa of issue.fields.customfield_10613) {
+        const saName = sa.displayName?.trim() || sa.name;
+        if (isSAMember(saName)) saNames.add(saName);
+      }
+    }
 
-    for (const sa of saMembers) {
-      const name = sa.displayName?.trim() || sa.name;
-      
-      // Only include if this SA member is part of the SA team
-      if (!isSAMember(name)) continue;
+    if (saNames.size === 0) continue;
 
+    for (const name of saNames) {
       if (!grouped.has(name)) {
         grouped.set(name, { assigneeName: name, whatsDone: [], whatsNext: [] });
       }
@@ -160,16 +198,27 @@ function groupTasksBySA(issues) {
     }
   }
 
-  return Array.from(grouped.values()).sort((a, b) => a.assigneeName.localeCompare(b.assigneeName));
+  return Array.from(grouped.values()).sort((a, b) =>
+    a.assigneeName.localeCompare(b.assigneeName),
+  );
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
 function classifyStatus(statusName) {
   const s = statusName.toLowerCase().trim();
-  if (["done", "closed", "deploy production", "invalid"].includes(s)) return "doneDeployed";
+  if (["done", "closed", "deploy production", "invalid"].includes(s))
+    return "doneDeployed";
   if (s === "in progress") return "inProgress";
-  if (["code review", "qc bc - testing staging", "staging", "deploy development"].includes(s)) return "reviewTesting";
+  if (
+    [
+      "code review",
+      "qc bc - testing staging",
+      "staging",
+      "deploy development",
+    ].includes(s)
+  )
+    return "reviewTesting";
   if (s === "pending") return "pending";
   if (["task to do", "open", "to do"].includes(s)) return "taskToDo";
   return "other";
@@ -184,7 +233,9 @@ function computeStats(issues, groups) {
     pending: 0,
     taskToDo: 0,
     other: 0,
-    activeAssignees: groups.filter((g) => g.whatsDone.length > 0 || g.whatsNext.length > 0).length,
+    activeAssignees: groups.filter(
+      (g) => g.whatsDone.length > 0 || g.whatsNext.length > 0,
+    ).length,
   };
   for (const issue of issues) {
     stats[classifyStatus(issue.fields.status.name)]++;
@@ -210,8 +261,18 @@ function formatDateTime() {
   const now = new Date();
   const days = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
   const months = [
-    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember",
   ];
   const wib = new Date(now.getTime() + 7 * 60 * 60 * 1000);
   const hh = String(wib.getUTCHours()).padStart(2, "0");
@@ -223,19 +284,23 @@ function formatDateTime() {
   };
 }
 
-
-
-
-function checkSLA(task) {
-  const status = task.fields.status.name.toLowerCase();
-  if (status.includes("to do") || status.includes("open") || status === "task to do") {
-    const updatedDate = new Date(task.fields.updated);
-    const diffHours = (new Date().getTime() - updatedDate.getTime()) / (1000 * 60 * 60);
-    if (diffHours >= 1) {
-      return ` [⚠️ SLA BREACH: ${Math.floor(diffHours)} Jam]`;
-    }
-  }
-  return "";
+function getStatusEmoji(status) {
+  const s = status.toLowerCase();
+  if (
+    s.includes("done") ||
+    s.includes("deploy") ||
+    s.includes("resolved") ||
+    s.includes("closed")
+  )
+    return "✅";
+  if (s.includes("progress")) return "⏳";
+  if (s.includes("review") || s.includes("testing") || s.includes("qc"))
+    return "🔍";
+  if (s.includes("to do") || s.includes("open") || s.includes("task"))
+    return "📋";
+  if (s.includes("pending") || s.includes("wait") || s.includes("reopen"))
+    return "⚠️";
+  return "📌";
 }
 
 function formatDetailMessages(groups) {
@@ -259,22 +324,25 @@ function formatDetailMessages(groups) {
 
     const summaryParts = [];
     for (const [st, tasks] of Object.entries(tasksByStatus)) {
-      summaryParts.push(`${st}: ${tasks.length}`);
+      const emoji = getStatusEmoji(st);
+      summaryParts.push(`${emoji} ${st} : ${tasks.length}`);
     }
 
     const sectionHeader =
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>${escapeHtml(group.assigneeName)}</b>\n` +
-      `<i>(${summaryParts.join(" | ")})</i>\n` +
+      `👤 <b>${escapeHtml(group.assigneeName)}</b>\n\n` +
+      `<i>${summaryParts.join("\n")}</i>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     const lines = [];
-    
+
     for (const [st, tasks] of Object.entries(tasksByStatus)) {
-      lines.push(`\n<b>[${escapeHtml(st)}]</b>`);
+      const emoji = getStatusEmoji(st);
+      lines.push(`\n<b>${escapeHtml(st)} ${emoji}</b>`);
       for (const task of tasks) {
-        const slaWarning = checkSLA(task);
-        lines.push(`- [${task.key}] ${escapeHtml(task.fields.summary)}${slaWarning}`);
+        lines.push(
+          `- [${task.key}] ${escapeHtml(task.fields.summary)}`,
+        );
       }
     }
 
@@ -318,7 +386,7 @@ async function sendTelegramMessage(text) {
         parse_mode: "HTML",
         disable_web_page_preview: true,
       }),
-    }
+    },
   );
 
   if (!response.ok) {
@@ -355,18 +423,37 @@ async function runReport() {
     const saIssues = issues.filter((i) => saIssueKeys.has(i.key));
 
     const stats = computeStats(saIssues, grouped);
-    console.log(`📊 Stats: InProgress=${stats.inProgress} | Review=${stats.reviewTesting} | ToDo=${stats.taskToDo}`);
+    console.log(
+      `📊 Stats: InProgress=${stats.inProgress} | Review=${stats.reviewTesting} | ToDo=${stats.taskToDo}`,
+    );
 
     // 4. Build messages: detail pages only
+    const cukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value === 'Cukai');
+    const nonCukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value !== 'Cukai');
+
+    const cukaiGrouped = groupTasksBySA(cukaiIssues);
+    const nonCukaiGrouped = groupTasksBySA(nonCukaiIssues);
+
     const { day, date, time } = formatDateTime();
-    const detailMsgs = formatDetailMessages(grouped);
-    
-    // Add header to the first message
-    if (detailMsgs.length > 0) {
-      detailMsgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + detailMsgs[0];
+    const allMessages = [];
+
+    // Format Cukai
+    if (cukaiGrouped.length > 0) {
+      const msgs = formatDetailMessages(cukaiGrouped);
+      if (msgs.length > 0) {
+        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+        allMessages.push(...msgs);
+      }
     }
-    
-    const allMessages = [...detailMsgs];
+
+    // Format Non Cukai
+    if (nonCukaiGrouped.length > 0) {
+      const msgs = formatDetailMessages(nonCukaiGrouped);
+      if (msgs.length > 0) {
+        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+        allMessages.push(...msgs);
+      }
+    }
     console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
     // 5. Send to Telegram
@@ -417,6 +504,6 @@ if (isOnce) {
     () => {
       runReport();
     },
-    { timezone: "Asia/Jakarta" }
+    { timezone: "Asia/Jakarta" },
   );
 }

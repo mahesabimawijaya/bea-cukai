@@ -49,19 +49,6 @@ export function ReportingTab({
 }) {
   const [copied, setCopied] = React.useState(false);
 
-  // Helper for SLA checking
-  const checkSLA = (issue: JiraIssue) => {
-    const status = issue.fields.status.name.toLowerCase();
-    if (status.includes("to do") || status.includes("open") || status === "task to do") {
-      const updatedDate = new Date(issue.fields.updated);
-      const diffHours = (new Date().getTime() - updatedDate.getTime()) / (1000 * 60 * 60);
-      if (diffHours >= 1) {
-        return ` [⚠️ SLA BREACH: ${Math.floor(diffHours)} Jam]`;
-      }
-    }
-    return "";
-  };
-
   const generateTelegramText = () => {
     const today = new Date();
     const formattedDate = today.toLocaleDateString("id-ID", {
@@ -86,22 +73,35 @@ export function ReportingTab({
           tasksByStatus[st].push(t);
         });
 
+        const getStatusEmoji = (status: string) => {
+          const s = status.toLowerCase();
+          if (s.includes("done") || s.includes("deploy") || s.includes("resolved") || s.includes("closed")) return "✅";
+          if (s.includes("progress")) return "⏳";
+          if (s.includes("review") || s.includes("testing") || s.includes("qc")) return "🔍";
+          if (s.includes("to do") || s.includes("open") || s.includes("task")) return "📋";
+          if (s.includes("pending") || s.includes("wait") || s.includes("reopen")) return "⚠️";
+          return "📌";
+        };
+
         const summaryParts = [];
         for (const [st, tasks] of Object.entries(tasksByStatus)) {
-          summaryParts.push(`${st}: ${tasks.length}`);
+          const emoji = getStatusEmoji(st);
+          summaryParts.push(`${emoji} ${st} : ${tasks.length}`);
         }
 
+        message += `━━━━━━━━━━━━━━━━━━━━\n`;
         message += `*👤 ${g.assigneeName}*\n`;
-        message += `_(${summaryParts.join(" | ")})_\n`;
+        message += `_(${summaryParts.join("\n")})_\n`;
+        message += `━━━━━━━━━━━━━━━━━━━━\n`;
         
         for (const [st, tasks] of Object.entries(tasksByStatus)) {
-          message += `\n*[${st}]*\n`;
+          const emoji = getStatusEmoji(st);
+          message += `\n*${st} ${emoji}*\n`;
           tasks.forEach((issue) => {
-            const slaWarning = checkSLA(issue);
-            message += `- [${issue.key}] ${issue.fields.summary}${slaWarning}\n`;
+            message += `- [${issue.key}] ${issue.fields.summary}\n`;
           });
         }
-        message += `\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+        message += `\n\n`;
       }
     });
 
