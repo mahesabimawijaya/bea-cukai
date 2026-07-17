@@ -129,9 +129,7 @@ const WHATS_NEXT_STATUSES = new Set([
 ]);
 
 function categorizeTask(statusName) {
-  return WHATS_NEXT_STATUSES.has(statusName.toLowerCase().trim())
-    ? "next"
-    : "done";
+  return "next";
 }
 
 // ─── SA Team Filter ──────────────────────────────────────────────────────────
@@ -159,7 +157,7 @@ function isSAMember(displayName) {
 // ─── Jira API ───────────────────────────────────────────────────────────────
 
 async function fetchJiraTasks() {
-  const jql = `project = 'BUGS26' AND (updatedDate >= startOfDay() OR status = 'In Progress') ORDER BY assignee ASC, updated DESC`;
+  const jql = `project = 'BUGS26' AND (status NOT IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') OR (status IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') AND updatedDate >= startOfDay())) ORDER BY assignee ASC, updated DESC`;
   const allIssues = [];
   let startAt = 0;
   const maxResults = 50;
@@ -366,7 +364,7 @@ function formatDetailMessages(groups) {
     const sectionHeader =
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
       `👤 *${escapeWhatsApp(group.assigneeName)}*\n\n` +
-      `_${summaryParts.join("\n")}_\n` +
+      `${summaryParts.join("\n")}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     const lines = [];
@@ -470,10 +468,15 @@ async function runReport() {
     console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
     for (let i = 0; i < allMessages.length; i++) {
-      await sendWhatsAppMessage(allMessages[i]);
-      console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
-      if (i < allMessages.length - 1) {
-        await new Promise((r) => setTimeout(r, 1500)); // Slightly longer delay for WA
+      if (isDebug) {
+        console.log(`\n\n========== MESSAGE ${i + 1}/${allMessages.length} ==========\n`);
+        console.log(allMessages[i]);
+        console.log(`\n==============================================\n`);
+      } else {
+        await sendWhatsAppMessage(allMessages[i]);
+        console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
+        // Always delay 3 seconds after sending a message to prevent websocket abort on script exit
+        await new Promise((r) => setTimeout(r, 3000));
       }
     }
 
@@ -487,22 +490,25 @@ async function runReport() {
 // ─── Entry Point ────────────────────────────────────────────────────────────
 
 const isOnce = process.argv.includes("--once");
+const isDebug = process.argv.includes("--debug");
 
 async function main() {
-  // Always initialize WhatsApp and wait for ready event before running reports
-  await ensureWhatsAppReady();
+  if (!isDebug) {
+    // Always initialize WhatsApp and wait for ready event before running reports
+    await ensureWhatsAppReady();
+  }
 
   if (isOnce) {
     console.log("🚀 Running one-shot report...\n");
     runReport()
       .then(async () => {
         console.log("\n🏁 Done.");
-        await whatsappClient.destroy();
+        if (!isDebug) await whatsappClient.destroy();
         process.exit(0);
       })
       .catch(async (e) => {
         console.error(e);
-        await whatsappClient.destroy();
+        if (!isDebug) await whatsappClient.destroy();
         process.exit(1);
       });
   } else {

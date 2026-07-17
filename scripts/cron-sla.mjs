@@ -242,6 +242,7 @@ async function runSlaCheck() {
           "summary",
           "status",
           "assignee",
+          "customfield_10613",
           "customfield_10619",
           "updated",
           "created",
@@ -278,16 +279,40 @@ async function runSlaCheck() {
   });
   console.log("Status breakdown:", statusCounts);
 
+  let closestTaskToDo = null;
+  let maxHoursInTaskToDo = -1;
+
   for (const issue of issues) {
     const rawStatus = issue.fields.status.name.toLowerCase();
     const statusCat = categorizeTask(rawStatus);
     const key = issue.key;
     const summary = issue.fields.summary;
-    const assignee = issue.fields.assignee
-      ? issue.fields.assignee.displayName
-      : "Unassigned";
+    
+    // Check if any SA member is associated with this ticket (Assignee or customfield_10613)
+    let isSA = false;
+    let saNames = [];
 
-    if (!isSAMember(assignee)) continue;
+    if (issue.fields.assignee) {
+      const name = issue.fields.assignee.displayName?.trim() || issue.fields.assignee.name;
+      if (isSAMember(name)) {
+        isSA = true;
+        saNames.push(name);
+      }
+    }
+
+    if (issue.fields.customfield_10613) {
+      for (const sa of issue.fields.customfield_10613) {
+        const name = sa.displayName?.trim() || sa.name;
+        if (isSAMember(name)) {
+          isSA = true;
+          saNames.push(name);
+        }
+      }
+    }
+
+    if (!isSA) continue;
+
+    const assignee = saNames.join(", ");
 
     if (statusCat === "todo") {
       // 1. New Todo (within last 24h to avoid old spam, but alert once)
@@ -342,6 +367,11 @@ async function runSlaCheck() {
       // Gentleman Agreement: Task To Do > 3 days (72 hours)
       const hoursInTaskToDo = calculateTimeSpentInStatus(issue, "task to do");
       
+      if (hoursInTaskToDo > maxHoursInTaskToDo) {
+        maxHoursInTaskToDo = hoursInTaskToDo;
+        closestTaskToDo = { key, summary, assignee, hours: hoursInTaskToDo };
+      }
+      
       if (
         hoursInTaskToDo >= 72 &&
         !(await hasAlertBeenSent(key, "TASK_TODO_3DAYS"))
@@ -373,6 +403,13 @@ async function runSlaCheck() {
         console.log(`Sent REVISI_ENTER for ${key}`);
       }
     }
+  }
+
+  if (closestTaskToDo) {
+    console.log(`\n🔍 [DEBUG] Task To Do paling mendekati 3 hari (72 Jam):`);
+    console.log(`   📌 [${closestTaskToDo.key}] ${closestTaskToDo.summary}`);
+    console.log(`   👤 PIC: ${closestTaskToDo.assignee}`);
+    console.log(`   ⏳ Umur di status "Task To Do": ${closestTaskToDo.hours.toFixed(2)} Jam\n`);
   }
 }
 

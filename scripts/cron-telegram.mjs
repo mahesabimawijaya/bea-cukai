@@ -66,9 +66,7 @@ const WHATS_NEXT_STATUSES = new Set([
 ]);
 
 function categorizeTask(statusName) {
-  return WHATS_NEXT_STATUSES.has(statusName.toLowerCase().trim())
-    ? "next"
-    : "done";
+  return "next";
 }
 
 // ─── SA Team Filter ──────────────────────────────────────────────────────────
@@ -109,7 +107,7 @@ function isSAMember(displayName) {
 // ─── Jira API ───────────────────────────────────────────────────────────────
 
 async function fetchJiraTasks() {
-  const jql = `project = 'BUGS26' AND (updatedDate >= startOfDay() OR status = 'In Progress') ORDER BY assignee ASC, updated DESC`;
+  const jql = `project = 'BUGS26' AND (status NOT IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') OR (status IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') AND updatedDate >= startOfDay())) ORDER BY assignee ASC, updated DESC`;
   const allIssues = [];
   let startAt = 0;
   const maxResults = 50;
@@ -331,7 +329,7 @@ function formatDetailMessages(groups) {
     const sectionHeader =
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
       `👤 <b>${escapeHtml(group.assigneeName)}</b>\n\n` +
-      `<i>${summaryParts.join("\n")}</i>\n` +
+      `${summaryParts.join("\n")}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     const lines = [];
