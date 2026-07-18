@@ -11,6 +11,10 @@ import {
 } from "@/components/ui/table";
 import { TabsContent } from "@/components/ui/tabs";
 import { JiraIssue, ReportStats } from "@/types/jira";
+import { IssueDetailSheet } from "./issue-detail-sheet";
+import { RecurringIssuesSection } from "./recurring-tab";
+import { CreateIssueSheet } from "./create-issue-sheet";
+import { Plus } from "lucide-react";
 
 function BarRow({
   label,
@@ -74,15 +78,30 @@ const getStatusBadge = (s: string) => {
   return "bg-slate-100 text-slate-700 hover:bg-slate-100";
 };
 
+const getAplikasiLabel = (aplikasi: string | null | undefined) => {
+  if (!aplikasi) return { label: "—", isCukai: false, isNonCukai: false };
+  const isCukai = aplikasi.toLowerCase() === "cukai";
+  return {
+    label: aplikasi,
+    isCukai,
+    isNonCukai: !isCukai,
+  };
+};
+
 export function JiraTab({
   issues,
   stats,
   isLoading,
+  onRefresh,
 }: {
   issues: JiraIssue[];
   stats: ReportStats | null;
-  isLoading: boolean;
+  isLoading?: boolean;
+  onRefresh?: () => void;
 }) {
+  const [selectedIssueKey, setSelectedIssueKey] = React.useState<string | null>(null);
+  const [isCreateOpen, setIsCreateOpen] = React.useState(false);
+
   const total = stats?.total || 1;
   const donePct = Math.round(((stats?.doneDeployed || 0) / total) * 100);
   const reviewPct = Math.round(((stats?.reviewTesting || 0) / total) * 100);
@@ -93,6 +112,8 @@ export function JiraTab({
 
   return (
     <TabsContent value="jira" className="outline-none">
+      <RecurringIssuesSection />
+
       <section className="bg-white border border-slate-200 rounded-[18px] shadow-sm p-5 md:p-6 mb-6">
         <div className="flex flex-col md:flex-row justify-between md:items-start gap-4 mb-5">
           <div>
@@ -104,12 +125,21 @@ export function JiraTab({
               mulai dari status development sampai deployment production. (Filter tersinkronisasi otomatis)
             </p>
           </div>
-          <Badge
-            variant="secondary"
-            className="bg-[#eef4ff] text-[#175cd3] rounded-full px-3 py-1.5 font-bold text-xs border-none hover:bg-[#eef4ff]"
-          >
-            Live Tracking
-          </Badge>
+          <div className="flex items-center gap-3">
+            <Badge
+              variant="secondary"
+              className="bg-[#eef4ff] text-[#175cd3] rounded-full px-3 py-1.5 font-bold text-xs border-none hover:bg-[#eef4ff]"
+            >
+              Live Tracking
+            </Badge>
+            <button
+              onClick={() => setIsCreateOpen(true)}
+              className="px-4 py-1.5 rounded-full font-bold text-xs text-white bg-[#0b66d8] hover:bg-blue-700 transition-colors flex items-center gap-1.5 shadow-sm"
+            >
+              <Plus className="w-4 h-4" />
+              Create Issue
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-5 mb-5">
@@ -165,6 +195,7 @@ export function JiraTab({
                 <TableHeader className="bg-slate-50 sticky top-0 z-10 shadow-sm">
                   <TableRow>
                     <TableHead className="font-bold text-xs uppercase">Jira Key</TableHead>
+                    <TableHead className="font-bold text-xs uppercase">Aplikasi</TableHead>
                     <TableHead className="font-bold text-xs uppercase">Module</TableHead>
                     <TableHead className="font-bold text-xs uppercase">Summary</TableHead>
                     <TableHead className="font-bold text-xs uppercase">Status</TableHead>
@@ -176,13 +207,13 @@ export function JiraTab({
                 <TableBody>
                   {isLoading ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="h-32 text-center text-slate-400">
+                      <TableCell colSpan={8} className="h-32 text-center text-slate-400">
                         Loading issues...
                       </TableCell>
                     </TableRow>
                   ) : issues.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="h-32 text-center text-slate-400">
+                      <TableCell colSpan={8} className="h-32 text-center text-slate-400">
                         No issues match your filters.
                       </TableCell>
                     </TableRow>
@@ -190,10 +221,25 @@ export function JiraTab({
                     issues.map((issue) => {
                       const components = issue.fields.components?.map((c) => c.name).join(", ") || "-";
                       const saNames = issue.fields.customfield_10613?.map((u) => u.displayName.split(" ")[0]).join(", ") || "-";
+                      const aplikasiVal = issue.fields.customfield_10616?.value || null;
+                      const aplikasi = getAplikasiLabel(aplikasiVal);
                       return (
                         <TableRow key={issue.key}>
                           <TableCell className="font-bold text-blue-600 whitespace-nowrap">
                             {issue.key}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              className={`border-none shadow-none text-[10px] whitespace-nowrap ${
+                                aplikasi.isCukai
+                                  ? "bg-indigo-50 text-indigo-700 hover:bg-indigo-50"
+                                  : aplikasi.isNonCukai
+                                  ? "bg-orange-50 text-orange-700 hover:bg-orange-50"
+                                  : "bg-slate-100 text-slate-400 hover:bg-slate-100"
+                              }`}
+                            >
+                              {aplikasi.isCukai ? "🏛️ " : aplikasi.isNonCukai ? "📦 " : ""}{aplikasi.label}
+                            </Badge>
                           </TableCell>
                           <TableCell className="max-w-[120px] truncate" title={components}>
                             {components}
@@ -215,11 +261,14 @@ export function JiraTab({
                             {saNames}
                           </TableCell>
                           <TableCell className="text-right">
-                            <a href={`https://jira.beacukai.go.id/browse/${issue.key}`} target="_blank" rel="noopener noreferrer">
-                              <Button variant="outline" size="sm" className="h-7 text-xs bg-white">
-                                View
-                              </Button>
-                            </a>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs bg-white hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 transition-colors"
+                              onClick={() => setSelectedIssueKey(issue.key)}
+                            >
+                              Detail
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
@@ -241,15 +290,26 @@ export function JiraTab({
             desc="Gunakan bar filter di atas (Module, Priority, Status, Search) untuk menyaring data."
           />
           <InfoCard
-            title="SA Team Only"
-            desc="Data ini disaring secara spesifik hanya untuk isu yang dikelola oleh anggota tim SA."
+            title="All Teams"
+            desc="Data ini menampilkan seluruh tiket aktif dari semua tim yang tercatat di Jira."
           />
           <InfoCard
-            title="Interactive Link"
-            desc="Klik tombol View pada tabel untuk membuka langsung tiket di aplikasi Jira."
+            title="Detail Tiket"
+            desc="Klik tombol Detail untuk melihat deskripsi, komentar, dan riwayat perubahan tiket."
           />
         </div>
       </section>
+
+      <IssueDetailSheet
+        issueKey={selectedIssueKey}
+        onClose={() => setSelectedIssueKey(null)}
+      />
+
+      <CreateIssueSheet
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        onSuccess={() => onRefresh?.()}
+      />
     </TabsContent>
   );
 }

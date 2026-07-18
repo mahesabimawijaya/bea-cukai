@@ -17,6 +17,7 @@ import { JiraIssue, ReportStats, GroupedTasks } from "@/types/jira";
 const MODULES = ["All Modules", "PIB", "PEB", "Manifes", "E-Faktur", "PFPD"];
 const PRIORITIES = ["All Priorities", "P1 Critical", "P2 High", "P3 Medium"];
 const STATUSES = ["All Status", "Open", "In Progress", "Escalated", "Resolved"];
+const APLIKASI_OPTIONS = ["Semua Aplikasi", "Cukai", "Non-Cukai"];
 import {
   Table,
   TableBody,
@@ -39,6 +40,15 @@ export function UnifiedDashboard() {
   const [moduleSearch, setModuleSearch] = React.useState("");
   const [prioritySearch, setPrioritySearch] = React.useState("");
   const [statusSearch, setStatusSearch] = React.useState("");
+  const [aplikasiSearch, setAplikasiSearch] = React.useState("");
+
+  const filteredAplikasiOptions = React.useMemo(
+    () =>
+      APLIKASI_OPTIONS.filter((a) =>
+        a.toLowerCase().includes(aplikasiSearch.toLowerCase()),
+      ),
+    [aplikasiSearch],
+  );
 
   const filteredModules = React.useMemo(
     () =>
@@ -68,6 +78,7 @@ export function UnifiedDashboard() {
       module: "All Modules",
       priority: "All Priorities",
       status: "All Status",
+      aplikasi: "Semua Aplikasi",
       assignee: "",
       search: "",
     },
@@ -82,7 +93,7 @@ export function UnifiedDashboard() {
   }>({ issues: [], grouped: [], stats: null });
   const [isLoadingJira, setIsLoadingJira] = React.useState(true);
 
-  React.useEffect(() => {
+  const loadJiraData = React.useCallback(() => {
     setIsLoadingJira(true);
     fetch("/api/jira")
       .then((res) => res.json())
@@ -94,6 +105,10 @@ export function UnifiedDashboard() {
       .catch((err) => console.error("Failed to load Jira data", err))
       .finally(() => setIsLoadingJira(false));
   }, []);
+
+  React.useEffect(() => {
+    loadJiraData();
+  }, [loadJiraData]);
 
   const filteredJiraIssues = React.useMemo(() => {
     return jiraData.issues.filter((issue) => {
@@ -134,6 +149,14 @@ export function UnifiedDashboard() {
         const ass = issue.fields.assignee;
         const assName = ass ? (ass.displayName || ass.name) : "Unassigned";
         matches = matches && assName.toLowerCase().includes(formValues.assignee.toLowerCase());
+      }
+      if (formValues.aplikasi && formValues.aplikasi !== "Semua Aplikasi") {
+        const aplikasiVal = issue.fields.customfield_10616?.value || "";
+        if (formValues.aplikasi === "Cukai") {
+          matches = matches && aplikasiVal.toLowerCase() === "cukai";
+        } else if (formValues.aplikasi === "Non-Cukai") {
+          matches = matches && aplikasiVal.toLowerCase() !== "cukai" && aplikasiVal !== "";
+        }
       }
       return matches;
     });
@@ -272,6 +295,35 @@ export function UnifiedDashboard() {
                         ))
                       ) : (
                         <ComboboxEmpty>No statuses found.</ComboboxEmpty>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
+              <div className="flex flex-col gap-1.5 flex-1 min-w-[150px]">
+                <label className="text-[11px] text-slate-500 font-extrabold uppercase tracking-wide">
+                  Aplikasi
+                </label>
+                <Combobox
+                  onValueChange={(val) => setValue("aplikasi", val || "")}
+                  defaultValue="Semua Aplikasi"
+                  inputValue={aplikasiSearch}
+                  onInputValueChange={setAplikasiSearch}
+                >
+                  <ComboboxInput
+                    placeholder="Semua Aplikasi"
+                    className="!rounded-xl !h-11 bg-white border-slate-300 w-full"
+                  />
+                  <ComboboxContent>
+                    <ComboboxList>
+                      {filteredAplikasiOptions.length > 0 ? (
+                        filteredAplikasiOptions.map((a) => (
+                          <ComboboxItem key={a} value={a}>
+                            {a === "Cukai" ? "🏛️ Cukai" : a === "Non-Cukai" ? "📦 Non-Cukai" : a}
+                          </ComboboxItem>
+                        ))
+                      ) : (
+                        <ComboboxEmpty>No options found.</ComboboxEmpty>
                       )}
                     </ComboboxList>
                   </ComboboxContent>
@@ -445,7 +497,7 @@ export function UnifiedDashboard() {
           </TabsContent>
 
           {/* 2. BUG FIXING JIRA */}
-          <JiraTab issues={filteredJiraIssues} stats={jiraData.stats} isLoading={isLoadingJira} />
+          <JiraTab issues={filteredJiraIssues} stats={jiraData.stats} isLoading={isLoadingJira} onRefresh={loadJiraData} />
 
           {/* 3. INCIDENT CUSTOMER CARE */}
           <TabsContent value="incident" className="outline-none">

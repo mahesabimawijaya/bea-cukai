@@ -104,11 +104,12 @@ export async function fetchJiraTasks(
           "summary",
           "status",
           "assignee",
-          "customfield_10613",
+          "customfield_10613", // System Analyst
+          "customfield_10616", // Aplikasi (Cukai / Non-Cukai)
           "priority",
           "components",
           "issuetype",
-          "customfield_10619",
+          "customfield_10619", // Tipe UseCase (SLA complexity)
           "updated",
           "created",
         ],

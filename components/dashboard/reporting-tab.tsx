@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/accordion";
 import { GroupedTasks, ReportStats, JiraIssue } from "@/types/jira";
 import { Clock, FileText, Bug, AlertTriangle, Copy, CheckCircle2 } from "lucide-react";
+import { IssueDetailSheet } from "./issue-detail-sheet";
 
 function ReportCard({
   icon,
@@ -48,6 +49,7 @@ export function ReportingTab({
   isLoading: boolean;
 }) {
   const [copied, setCopied] = React.useState(false);
+  const [selectedIssueKey, setSelectedIssueKey] = React.useState<string | null>(null);
 
   const generateTelegramText = () => {
     const today = new Date();
@@ -126,7 +128,7 @@ export function ReportingTab({
             </h2>
             <p className="mt-1.5 text-slate-500 text-[13px] leading-relaxed max-w-3xl">
               Reporting dinamis yang dihasilkan langsung dari data Jira terkini. 
-              Gunakan fitur ini untuk memantau beban kerja masing-masing anggota tim SA 
+              Gunakan fitur ini untuk memantau beban kerja masing-masing anggota tim 
               atau men-generate teks report harian untuk Telegram.
             </p>
           </div>
@@ -143,7 +145,7 @@ export function ReportingTab({
           <ReportCard
             icon={<AlertTriangle className="w-5 h-5" />}
             title="Total Active Issues"
-            desc="Total tiket Jira BUGS26 yang sedang ditangani oleh Tim SA"
+            desc="Total tiket Jira BUGS26 yang sedang aktif ditangani"
             value={isLoading ? "-" : stats?.total || 0}
           />
           <ReportCard
@@ -160,19 +162,19 @@ export function ReportingTab({
           />
           <ReportCard
             icon={<Bug className="w-5 h-5" />}
-            title="Active SA Members"
-            desc="Jumlah anggota Tim SA yang memiliki minimal 1 tiket aktif"
+            title="Active Assignees"
+            desc="Jumlah anggota yang memiliki minimal 1 tiket aktif"
             value={isLoading ? "-" : stats?.activeAssignees || 0}
           />
         </div>
 
         {/* Team Breakdown & Telegram Generator */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-5">
-          {/* Accordion for SA Members */}
+          {/* Accordion for All Assignees */}
           <div className="lg:col-span-2 border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
             <div className="px-5 py-4 border-b border-slate-200 bg-white">
               <h3 className="font-bold text-[#071b3a] text-sm m-0">
-                SA Team Workload Breakdown
+                Team Workload Breakdown
               </h3>
             </div>
             <div className="p-2 max-h-[500px] overflow-y-auto">
@@ -182,7 +184,7 @@ export function ReportingTab({
                 </div>
               ) : grouped.length === 0 ? (
                 <div className="h-32 flex items-center justify-center text-slate-400 text-sm font-medium">
-                  No SA members found with active issues.
+                  Tidak ada assignee dengan tiket aktif.
                 </div>
               ) : (
                 <Accordion className="w-full flex flex-col gap-2">
@@ -215,13 +217,16 @@ export function ReportingTab({
                             {g.whatsDone.length === 0 ? (
                               <div className="text-slate-400 italic">No tasks completed yet.</div>
                             ) : (
-                              <ul className="flex flex-col gap-1.5 list-disc pl-4">
+                              <ul className="flex flex-col gap-1.5 list-none pl-0">
                                 {g.whatsDone.map((i) => (
-                                  <li key={i.key}>
-                                    <a href={`https://jira.beacukai.go.id/browse/${i.key}`} target="_blank" rel="noopener noreferrer" className="font-semibold text-blue-600 hover:underline">
+                                  <li key={i.key} className="flex items-start gap-2">
+                                    <button
+                                      onClick={() => setSelectedIssueKey(i.key)}
+                                      className="font-semibold text-blue-600 hover:underline text-xs whitespace-nowrap"
+                                    >
                                       {i.key}
-                                    </a>
-                                    {" "}— {i.fields.summary}
+                                    </button>
+                                    <span className="text-slate-600">— {i.fields.summary}</span>
                                   </li>
                                 ))}
                               </ul>
@@ -233,13 +238,16 @@ export function ReportingTab({
                             {g.whatsNext.length === 0 ? (
                               <div className="text-slate-400 italic">No tasks queued.</div>
                             ) : (
-                              <ul className="flex flex-col gap-1.5 list-disc pl-4">
+                              <ul className="flex flex-col gap-1.5 list-none pl-0">
                                 {g.whatsNext.map((i) => (
-                                  <li key={i.key}>
-                                    <a href={`https://jira.beacukai.go.id/browse/${i.key}`} target="_blank" rel="noopener noreferrer" className="font-semibold text-blue-600 hover:underline">
+                                  <li key={i.key} className="flex items-start gap-2">
+                                    <button
+                                      onClick={() => setSelectedIssueKey(i.key)}
+                                      className="font-semibold text-blue-600 hover:underline text-xs whitespace-nowrap"
+                                    >
                                       {i.key}
-                                    </a>
-                                    {" "}— {i.fields.summary} <span className="text-slate-400">({i.fields.status.name})</span>
+                                    </button>
+                                    <span className="text-slate-600">— {i.fields.summary} <span className="text-slate-400">({i.fields.status.name})</span></span>
                                   </li>
                                 ))}
                               </ul>
@@ -289,6 +297,11 @@ export function ReportingTab({
           </span>
         </div>
       </section>
+
+      <IssueDetailSheet
+        issueKey={selectedIssueKey}
+        onClose={() => setSelectedIssueKey(null)}
+      />
     </TabsContent>
   );
 }
