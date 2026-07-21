@@ -4,9 +4,7 @@ import { fileURLToPath } from "url";
 import cron from "node-cron";
 import pkg from "pg";
 const { Client } = pkg;
-import waPkg from "whatsapp-web.js";
-const { Client: WAClient, LocalAuth } = waPkg;
-import qrcode from "qrcode-terminal";
+
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
@@ -17,11 +15,8 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
 const JIRA_USERNAME = process.env.JIRA_USERNAME;
 const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
 const JIRA_PAT = process.env.JIRA_PAT;
-const WA_GROUP_ID = process.env.WA_GROUP_ID || process.env.TELE_GROUP_ID;
-
-const CHROME_EXECUTABLE_PATH =
-  process.env.CHROME_EXECUTABLE_PATH ||
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const WA_GROUP_ID = process.env.WA_GROUP_ID;
+const FONNTE_TOKEN = process.env.FONNTE_TOKEN;
 
 const authHeader = JIRA_PAT
   ? `Bearer ${JIRA_PAT}`
@@ -62,62 +57,33 @@ async function markAlertSent(issueKey, alertType) {
   );
 }
 
-// ─── WhatsApp Setup ─────────────────────────────────────────────────────────
-
-const whatsappClient = new WAClient({
-  authStrategy: new LocalAuth(),
-  webVersionCache: {
-    type: "remote",
-    remotePath:
-      "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
-  },
-  puppeteer: {
-    executablePath: CHROME_EXECUTABLE_PATH,
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  },
-});
-
-let isWhatsAppReady = false;
-
-whatsappClient.on("qr", (qr) => {
-  console.log("\n📲 Scan this QR code in WhatsApp to log in:\n");
-  qrcode.generate(qr, { small: true });
-});
-
-whatsappClient.on("authenticated", () => {
-  console.log("✅ WhatsApp authenticated successfully!");
-});
-
-whatsappClient.on("ready", () => {
-  console.log("✅ WhatsApp Client is ready!");
-  isWhatsAppReady = true;
-});
-
-async function ensureWhatsAppReady() {
-  if (isWhatsAppReady) return;
-  console.log("Initializing WhatsApp Client...");
-  await whatsappClient.initialize();
-
-  return new Promise((resolve) => {
-    const checkReady = setInterval(() => {
-      if (isWhatsAppReady) {
-        clearInterval(checkReady);
-        resolve();
-      }
-    }, 1000);
-  });
-}
+// Fonnte does not require initialization like Puppeteer.
 
 async function sendAlertMessage(text) {
-  if (!WA_GROUP_ID) {
-    console.warn("WA_GROUP_ID not set. Message not sent:", text);
+  if (!WA_GROUP_ID || !FONNTE_TOKEN) {
+    console.warn("WA_GROUP_ID or FONNTE_TOKEN not set. Message not sent:", text);
     return;
   }
-  const formattedChatId = WA_GROUP_ID.includes("@")
-    ? WA_GROUP_ID
-    : `${WA_GROUP_ID}@c.us`;
-  await whatsappClient.sendMessage(formattedChatId, text);
+  
+  try {
+    const response = await fetch("https://api.fonnte.com/send", {
+      method: "POST",
+      headers: {
+        "Authorization": FONNTE_TOKEN,
+      },
+      body: new URLSearchParams({
+        target: WA_GROUP_ID,
+        message: text,
+      }),
+    });
+
+    const result = await response.json();
+    if (!result.status) {
+      console.error("Fonnte API Error:", result.reason);
+    }
+  } catch (e) {
+    console.error("Failed to send Fonnte message:", e.message);
+  }
 }
 
 // ─── SA Team Filter ──────────────────────────────────────────────────────────
@@ -416,12 +382,10 @@ async function runSlaCheck() {
 async function main() {
   const isOnce = process.argv.includes("--once");
   await initDB();
-  await ensureWhatsAppReady();
 
   if (isOnce) {
     console.log("🚀 Running one-shot SLA Check...");
     await runSlaCheck();
-    // Cannot cleanly exit whatsapp-web.js without proper destruction, but process.exit is fine.
     await dbClient.end();
     process.exit(0);
   } else {

@@ -13,9 +13,6 @@ import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
-import pkg from "whatsapp-web.js";
-const { Client, LocalAuth } = pkg;
-import qrcode from "qrcode-terminal";
 
 // ─── Load Environment ───────────────────────────────────────────────────────
 
@@ -30,9 +27,7 @@ const JIRA_USERNAME = process.env.JIRA_USERNAME;
 const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
 const JIRA_PAT = process.env.JIRA_PAT;
 const WA_GROUP_ID = process.env.WA_GROUP_ID || process.env.TELE_GROUP_ID; // Fallback to TELE_GROUP_ID if WA_GROUP_ID is missing
-
-// IMPORTANT: Adjust this if you use Edge or a different Chrome path
-const CHROME_EXECUTABLE_PATH = process.env.CHROME_EXECUTABLE_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const FONNTE_TOKEN = process.env.FONNTE_TOKEN;
 
 // Validate required env vars
 const missing = [];
@@ -44,6 +39,7 @@ if (!JIRA_PAT && (!JIRA_USERNAME || !JIRA_PASSWORD)) {
   process.exit(1);
 }
 if (!WA_GROUP_ID) missing.push("WA_GROUP_ID (or TELE_GROUP_ID)");
+if (!FONNTE_TOKEN) missing.push("FONNTE_TOKEN");
 
 if (missing.length > 0) {
   console.error(
@@ -52,65 +48,7 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-// ─── WhatsApp Setup ─────────────────────────────────────────────────────────
-
-const whatsappClient = new Client({
-  authStrategy: new LocalAuth(),
-  webVersionCache: {
-    type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-  },
-  puppeteer: {
-    executablePath: CHROME_EXECUTABLE_PATH,
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  }
-});
-
-let isWhatsAppReady = false;
-
-whatsappClient.on('qr', (qr) => {
-  console.log('\n📲 Scan this QR code in WhatsApp to log in:\n');
-  qrcode.generate(qr, { small: true });
-});
-
-whatsappClient.on('authenticated', () => {
-    console.log('✅ WhatsApp authenticated successfully!');
-});
-
-whatsappClient.on('auth_failure', msg => {
-    console.error('❌ WhatsApp authentication failure:', msg);
-});
-
-whatsappClient.on('loading_screen', (percent, message) => {
-    console.log(`🔄 WhatsApp Loading: ${percent}% - ${message}`);
-});
-
-whatsappClient.on('disconnected', (reason) => {
-    console.log('❌ WhatsApp Client was logged out or disconnected:', reason);
-    isWhatsAppReady = false;
-});
-
-whatsappClient.on('ready', () => {
-  console.log('✅ WhatsApp Client is ready!');
-  isWhatsAppReady = true;
-});
-
-// Helper to initialize and wait for ready
-async function ensureWhatsAppReady() {
-  if (isWhatsAppReady) return;
-  console.log("Initializing WhatsApp Client...");
-  await whatsappClient.initialize();
-  
-  return new Promise((resolve) => {
-    const checkReady = setInterval(() => {
-      if (isWhatsAppReady) {
-        clearInterval(checkReady);
-        resolve();
-      }
-    }, 1000);
-  });
-}
+// Fonnte does not require initialization like Puppeteer.
 
 // ─── Status Categorization ──────────────────────────────────────────────────
 
@@ -338,10 +276,7 @@ function getStatusEmoji(status) {
 }
 
 function formatDetailMessages(groups) {
-  const MAX_LEN = 4000;
-  const messages = [];
-  const pageHeader = `📋 *Detail per PIC*\n`;
-  let currentMessage = pageHeader;
+  let currentMessage = `📋 *Detail per PIC*\n`;
 
   for (const group of groups) {
     const activeTasks = group.whatsNext;
@@ -379,37 +314,35 @@ function formatDetailMessages(groups) {
       }
     }
 
-    const fullSection = sectionHeader + lines.join("\n") + "\n";
-
-    if ((currentMessage + fullSection).length <= MAX_LEN) {
-      currentMessage += fullSection;
-    } else if ((pageHeader + fullSection).length <= MAX_LEN) {
-      messages.push(currentMessage);
-      currentMessage = pageHeader + fullSection;
-    } else {
-      messages.push(currentMessage);
-      currentMessage = pageHeader + sectionHeader;
-      for (const line of lines) {
-        const lineWithNl = line + "\n";
-        if ((currentMessage + lineWithNl).length > MAX_LEN) {
-          messages.push(currentMessage);
-          currentMessage = pageHeader + sectionHeader + lineWithNl;
-        } else {
-          currentMessage += lineWithNl;
-        }
-      }
-    }
+    currentMessage += sectionHeader + lines.join("\n") + "\n";
   }
 
-  if (currentMessage.trim().length > 0) messages.push(currentMessage);
-  return messages;
+  return currentMessage.trim() !== `📋 *Detail per PIC*` ? [currentMessage] : [];
 }
 
 // ─── WhatsApp API ───────────────────────────────────────────────────────────
 
 async function sendWhatsAppMessage(text) {
-  const formattedChatId = WA_GROUP_ID.includes('@') ? WA_GROUP_ID : `${WA_GROUP_ID}@c.us`; 
-  await whatsappClient.sendMessage(formattedChatId, text);
+  const target = WA_GROUP_ID; // Fonnte uses the raw group ID or phone number
+  try {
+    const response = await fetch("https://api.fonnte.com/send", {
+      method: "POST",
+      headers: {
+        "Authorization": FONNTE_TOKEN,
+      },
+      body: new URLSearchParams({
+        target: target,
+        message: text,
+      }),
+    });
+
+    const result = await response.json();
+    if (!result.status) {
+      console.error("Fonnte API Error:", result.reason);
+    }
+  } catch (e) {
+    console.error("Failed to send Fonnte message:", e.message);
+  }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -493,22 +426,15 @@ const isOnce = process.argv.includes("--once");
 const isDebug = process.argv.includes("--debug");
 
 async function main() {
-  if (!isDebug) {
-    // Always initialize WhatsApp and wait for ready event before running reports
-    await ensureWhatsAppReady();
-  }
-
   if (isOnce) {
     console.log("🚀 Running one-shot report...\n");
     runReport()
-      .then(async () => {
+      .then(() => {
         console.log("\n🏁 Done.");
-        if (!isDebug) await whatsappClient.destroy();
         process.exit(0);
       })
-      .catch(async (e) => {
+      .catch((e) => {
         console.error(e);
-        if (!isDebug) await whatsappClient.destroy();
         process.exit(1);
       });
   } else {
