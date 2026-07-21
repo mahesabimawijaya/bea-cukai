@@ -120,8 +120,8 @@ async function fetchJiraTasks() {
           "summary",
           "status",
           "assignee",
-          "assignee",
           "customfield_10613",
+          "customfield_10616",
           "customfield_10619",
           "updated",
           "created",
@@ -276,7 +276,12 @@ function getStatusEmoji(status) {
 }
 
 function formatDetailMessages(groups) {
-  let currentMessage = `📋 *Detail per PIC*\n`;
+  const SPLIT_MESSAGES = process.env.SPLIT_MESSAGES === "true";
+  const MAX_LEN = 4000;
+  
+  const messages = [];
+  const pageHeader = `📋 *Detail per PIC*\n`;
+  let currentMessage = pageHeader;
 
   for (const group of groups) {
     const activeTasks = group.whatsNext;
@@ -314,10 +319,38 @@ function formatDetailMessages(groups) {
       }
     }
 
-    currentMessage += sectionHeader + lines.join("\n") + "\n";
+    const fullSection = sectionHeader + lines.join("\n") + "\n";
+
+    if (SPLIT_MESSAGES) {
+      if ((currentMessage + fullSection).length <= MAX_LEN) {
+        currentMessage += fullSection;
+      } else if ((pageHeader + fullSection).length <= MAX_LEN) {
+        messages.push(currentMessage);
+        currentMessage = pageHeader + fullSection;
+      } else {
+        messages.push(currentMessage);
+        currentMessage = pageHeader + sectionHeader;
+
+        for (const line of lines) {
+          const lineWithNl = line + "\n";
+          if ((currentMessage + lineWithNl).length > MAX_LEN) {
+            messages.push(currentMessage);
+            currentMessage = pageHeader + sectionHeader + lineWithNl;
+          } else {
+            currentMessage += lineWithNl;
+          }
+        }
+      }
+    } else {
+      currentMessage += fullSection;
+    }
   }
 
-  return currentMessage.trim() !== `📋 *Detail per PIC*` ? [currentMessage] : [];
+  if (currentMessage.trim() !== `📋 *Detail per PIC*`) {
+    messages.push(currentMessage);
+  }
+
+  return messages;
 }
 
 // ─── WhatsApp API ───────────────────────────────────────────────────────────
