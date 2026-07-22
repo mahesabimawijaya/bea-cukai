@@ -433,8 +433,9 @@ async function runReport() {
       if (cukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(cukaiGrouped);
         if (msgs.length > 0) {
+          const prefix = allMessages.length === 0 ? `Dear Pak Purwandi, Pak Mugi dan Pak Tagara berikut daily report hari ini\n\n` : "";
           msgs[0] =
-            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            `${prefix}📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
             msgs[0];
           allMessages.push(...msgs);
         }
@@ -444,8 +445,9 @@ async function runReport() {
       if (nonCukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(nonCukaiGrouped);
         if (msgs.length > 0) {
+          const prefix = allMessages.length === 0 ? `Dear Pak Purwandi, Pak Mugi dan Pak Tagara berikut daily report hari ini\n\n` : "";
           msgs[0] =
-            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            `${prefix}📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
             msgs[0];
           allMessages.push(...msgs);
         }
@@ -454,7 +456,7 @@ async function runReport() {
       const msgs = formatDetailMessages(grouped);
       if (msgs.length > 0) {
         msgs[0] =
-          `📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+          `Dear Pak Purwandi, Pak Mugi dan Pak Tagara berikut daily report hari ini\n\n📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
           msgs[0];
         allMessages.push(...msgs);
       }
