@@ -155,12 +155,13 @@ function groupTasksBySA(issues) {
 
   for (const issue of issues) {
     const saNames = new Set();
-    
+
     if (issue.fields.assignee) {
-      const assigneeName = issue.fields.assignee.displayName?.trim() || issue.fields.assignee.name;
+      const assigneeName =
+        issue.fields.assignee.displayName?.trim() || issue.fields.assignee.name;
       if (isSAMember(assigneeName)) saNames.add(assigneeName);
     }
-    
+
     if (issue.fields.customfield_10613) {
       for (const sa of issue.fields.customfield_10613) {
         const saName = sa.displayName?.trim() || sa.name;
@@ -231,7 +232,7 @@ function computeStats(issues, groups) {
 // ─── WhatsApp Formatting ────────────────────────────────────────────────────
 
 function escapeWhatsApp(text) {
-  return text.replace(/\*/g, '').replace(/_/g, '').replace(/```/g, '');
+  return text.replace(/\*/g, "").replace(/_/g, "").replace(/```/g, "");
 }
 
 function formatStatusDisplay(statusName) {
@@ -243,8 +244,18 @@ function formatDateTime() {
   const now = new Date();
   const days = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
   const months = [
-    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember",
   ];
   const wib = new Date(now.getTime() + 7 * 60 * 60 * 1000);
   const hh = String(wib.getUTCHours()).padStart(2, "0");
@@ -278,7 +289,7 @@ function getStatusEmoji(status) {
 function formatDetailMessages(groups) {
   const SPLIT_MESSAGES = process.env.SPLIT_MESSAGES === "true";
   const MAX_LEN = 4000;
-  
+
   const messages = [];
   const pageHeader = `📋 *Detail per PIC*\n`;
   let currentMessage = pageHeader;
@@ -313,9 +324,7 @@ function formatDetailMessages(groups) {
       const emoji = getStatusEmoji(st);
       lines.push(`\n*${escapeWhatsApp(st)} ${emoji}*`);
       for (const task of tasks) {
-        lines.push(
-          `- [${task.key}] ${escapeWhatsApp(task.fields.summary)}`,
-        );
+        lines.push(`- [${task.key}] ${escapeWhatsApp(task.fields.summary)}`);
       }
     }
 
@@ -361,7 +370,7 @@ async function sendWhatsAppMessage(text) {
     const response = await fetch("https://api.fonnte.com/send", {
       method: "POST",
       headers: {
-        "Authorization": FONNTE_TOKEN,
+        Authorization: FONNTE_TOKEN,
       },
       body: new URLSearchParams({
         target: target,
@@ -410,8 +419,12 @@ async function runReport() {
     const allMessages = [];
 
     if (GROUP_BY_APP) {
-      const cukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value === 'Cukai');
-      const nonCukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value !== 'Cukai');
+      const cukaiIssues = saIssues.filter(
+        (i) => i.fields.customfield_10616?.value === "Cukai",
+      );
+      const nonCukaiIssues = saIssues.filter(
+        (i) => i.fields.customfield_10616?.value !== "Cukai",
+      );
 
       const cukaiGrouped = groupTasksBySA(cukaiIssues);
       const nonCukaiGrouped = groupTasksBySA(nonCukaiIssues);
@@ -420,7 +433,9 @@ async function runReport() {
       if (cukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(cukaiGrouped);
         if (msgs.length > 0) {
-          msgs[0] = `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` + msgs[0];
+          msgs[0] =
+            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            msgs[0];
           allMessages.push(...msgs);
         }
       }
@@ -429,14 +444,18 @@ async function runReport() {
       if (nonCukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(nonCukaiGrouped);
         if (msgs.length > 0) {
-          msgs[0] = `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` + msgs[0];
+          msgs[0] =
+            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            msgs[0];
           allMessages.push(...msgs);
         }
       }
     } else {
       const msgs = formatDetailMessages(grouped);
       if (msgs.length > 0) {
-        msgs[0] = `📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` + msgs[0];
+        msgs[0] =
+          `📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+          msgs[0];
         allMessages.push(...msgs);
       }
     }
@@ -444,7 +463,9 @@ async function runReport() {
 
     for (let i = 0; i < allMessages.length; i++) {
       if (isDebug) {
-        console.log(`\n\n========== MESSAGE ${i + 1}/${allMessages.length} ==========\n`);
+        console.log(
+          `\n\n========== MESSAGE ${i + 1}/${allMessages.length} ==========\n`,
+        );
         console.log(allMessages[i]);
         console.log(`\n==============================================\n`);
       } else {
@@ -480,13 +501,13 @@ async function main() {
         process.exit(1);
       });
   } else {
-    // Schedule: 16:00 WIB, Monday–Friday
-    const schedule = "0 16 * * 1-5";
+    // Schedule: 17:00 WIB, Monday–Friday
+    const schedule = "0 17 * * 1-5";
 
     console.log("╔══════════════════════════════════════════╗");
     console.log("║  📬 WhatsApp Bot Scheduler — BUGS26      ║");
     console.log("╠══════════════════════════════════════════╣");
-    console.log(`║  Schedule : ${schedule} (Mon-Fri 16:00 WIB) ║`);
+    console.log(`║  Schedule : ${schedule} (Mon-Fri 17:00 WIB) ║`);
     console.log(`║  Chat ID  : ${WA_GROUP_ID?.substring(0, 20).padEnd(20)} ║`);
     console.log("╚══════════════════════════════════════════╝");
     console.log("\nPress Ctrl+C to stop.\n");
@@ -496,13 +517,16 @@ async function main() {
       () => {
         runReport();
       },
-      { timezone: "Asia/Jakarta" },
+      {
+        timezone: "Asia/Jakarta",
+        recoverMissedExecutions: true,
+      },
     );
   }
 }
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
 main();

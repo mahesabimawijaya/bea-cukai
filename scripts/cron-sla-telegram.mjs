@@ -400,6 +400,8 @@ async function main() {
       } catch (e) {
         console.error("SLA Cron Error:", e);
       }
+    }, {
+      recoverMissedExecutions: true
     });
   }
 }

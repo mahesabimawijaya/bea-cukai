@@ -495,13 +495,13 @@ if (isOnce) {
       process.exit(1);
     });
 } else {
-  // Schedule: 16:00 WIB, Monday–Friday
-  const schedule = "0 16 * * 1-5";
+  // Schedule: 17:00 WIB, Monday–Friday
+  const schedule = "0 17 * * 1-5";
 
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║  📬 Telegram Bot Scheduler — BUGS26     ║");
+  console.log("║  📬 Telegram Bot Scheduler — BUGS26      ║");
   console.log("╠══════════════════════════════════════════╣");
-  console.log(`║  Schedule : ${schedule} (Mon-Fri 16:00 WIB) ║`);
+  console.log(`║  Schedule : ${schedule} (Mon-Fri 17:00 WIB) ║`);
   console.log(`║  Chat ID  : ${TELE_GROUP_ID?.substring(0, 20).padEnd(20)} ║`);
   console.log("╚══════════════════════════════════════════╝");
   console.log("\nPress Ctrl+C to stop.\n");
@@ -511,6 +511,9 @@ if (isOnce) {
     () => {
       runReport();
     },
-    { timezone: "Asia/Jakarta" },
+    { 
+      timezone: "Asia/Jakarta",
+      recoverMissedExecutions: true
+    },
   );
 }
