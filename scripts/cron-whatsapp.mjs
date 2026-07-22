@@ -28,6 +28,7 @@ const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
 const JIRA_PAT = process.env.JIRA_PAT;
 const WA_GROUP_ID = process.env.WA_GROUP_ID || process.env.TELE_GROUP_ID; // Fallback to TELE_GROUP_ID if WA_GROUP_ID is missing
 const FONNTE_TOKEN = process.env.FONNTE_TOKEN;
+const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
 
 // Validate required env vars
 const missing = [];
@@ -503,14 +504,14 @@ async function main() {
         process.exit(1);
       });
   } else {
-    // Schedule: 17:00 WIB, Monday–Friday
-    const schedule = "0 17 * * 1-5";
+    // Schedule from env, fallback to 16:00 WIB, Monday–Friday
+    const schedule = REPORT_SCHEDULE;
 
     console.log("╔══════════════════════════════════════════╗");
     console.log("║  📬 WhatsApp Bot Scheduler — BUGS26      ║");
     console.log("╠══════════════════════════════════════════╣");
-    console.log(`║  Schedule : ${schedule} (Mon-Fri 17:00 WIB) ║`);
-    console.log(`║  Chat ID  : ${WA_GROUP_ID?.substring(0, 20).padEnd(20)} ║`);
+    console.log(`║  Schedule : ${schedule.padEnd(25)} ║`);
+    console.log(`║  Chat ID  : ${WA_GROUP_ID?.substring(0, 20).padEnd(25)} ║`);
     console.log("╚══════════════════════════════════════════╝");
     console.log("\nPress Ctrl+C to stop.\n");
 

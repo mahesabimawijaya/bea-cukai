@@ -28,6 +28,7 @@ const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
 const JIRA_PAT = process.env.JIRA_PAT;
 const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
 const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
+const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
 
 // Validate required env vars
 const missing = [];
@@ -495,14 +496,14 @@ if (isOnce) {
       process.exit(1);
     });
 } else {
-  // Schedule: 17:00 WIB, Monday–Friday
-  const schedule = "0 17 * * 1-5";
+  // Schedule from env, fallback to 16:00 WIB, Monday–Friday
+  const schedule = REPORT_SCHEDULE;
 
   console.log("╔══════════════════════════════════════════╗");
   console.log("║  📬 Telegram Bot Scheduler — BUGS26      ║");
   console.log("╠══════════════════════════════════════════╣");
-  console.log(`║  Schedule : ${schedule} (Mon-Fri 17:00 WIB) ║`);
-  console.log(`║  Chat ID  : ${TELE_GROUP_ID?.substring(0, 20).padEnd(20)} ║`);
+  console.log(`║  Schedule : ${schedule.padEnd(25)} ║`);
+  console.log(`║  Chat ID  : ${TELE_GROUP_ID?.substring(0, 20).padEnd(25)} ║`);
   console.log("╚══════════════════════════════════════════╝");
   console.log("\nPress Ctrl+C to stop.\n");
 
