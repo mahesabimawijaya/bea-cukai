@@ -180,10 +180,13 @@ function categorizeTask(statusName) {
 
 // ─── Main Polling ──────────────────────────────────────────────────────────
 
-async function runSlaCheck() {
-  console.log(`\n🕐 [${new Date().toLocaleString()}] Running SLA Check...`);
+async function runSlaCheck(isFullSla = true) {
+  const typeLabel = isFullSla ? "Full SLA" : "New Task";
+  console.log(`\n🕐 [${new Date().toLocaleString()}] Running ${typeLabel} Check...`);
 
-  const jql = `project = 'BUGS26' AND status NOT IN ('Done', 'Closed', 'Resolved')`;
+  const jql = isFullSla
+    ? `project = 'BUGS26' AND status NOT IN ('Done', 'Closed', 'Resolved')`
+    : `project = 'BUGS26' AND status IN ('To Do', 'Open', 'Task To Do') AND created >= -24h`;
 
   let allIssues = [];
   let startAt = 0;
@@ -276,25 +279,26 @@ async function runSlaCheck() {
 
     const assignee = saNames.join(", ");
 
+    // 1. New Todo (within last 24h to avoid old spam, but alert once)
+    const created = new Date(issue.fields.created);
+    const hoursSinceCreated =
+      (now.getTime() - created.getTime()) / (1000 * 60 * 60);
+
+    if (
+      hoursSinceCreated < 24 &&
+      !(await hasAlertBeenSent(key, "NEW_TODO"))
+    ) {
+      await sendTelegramMessage(
+        `🆕 <b>New Task Assigned</b>\n\n📌 <b>[${key}]</b> ${summary}\n👤 PIC: ${assignee}\n\nMohon segera diproses.`,
+      );
+      await markAlertSent(key, "NEW_TODO");
+      console.log(`Sent NEW_TODO for ${key}`);
+    }
+
     if (statusCat === "todo") {
-      // 1. New Todo (within last 24h to avoid old spam, but alert once)
-      const created = new Date(issue.fields.created);
-      const hoursSinceCreated =
-        (now.getTime() - created.getTime()) / (1000 * 60 * 60);
-
-      if (
-        hoursSinceCreated < 24 &&
-        !(await hasAlertBeenSent(key, "NEW_TODO"))
-      ) {
-        await sendAlertMessage(
-          `🆕 *New Task Assigned*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n\nMohon segera diproses.`,
-        );
-        await markAlertSent(key, "NEW_TODO");
-        console.log(`Sent NEW_TODO for ${key}`);
-      }
-
       // 2. SLA To Do -> In Progress (60 mins)
       if (
+        isFullSla &&
         hoursSinceCreated >= 1 &&
         !(await hasAlertBeenSent(key, "SLA_TODO"))
       ) {
@@ -304,7 +308,7 @@ async function runSlaCheck() {
         await markAlertSent(key, "SLA_TODO");
         console.log(`Sent SLA_TODO for ${key}`);
       }
-    } else if (statusCat === "inprogress") {
+    } else if (isFullSla && statusCat === "inprogress") {
       // 3. SLA In Progress -> Code Review (H-1 Reminder)
       const complexity = issue.fields.customfield_10619?.value; // SIMPLE, AVG, COMPLEX
       const totalSla = getSLAHours(complexity);
@@ -325,7 +329,7 @@ async function runSlaCheck() {
         await markAlertSent(key, "H1_INPROGRESS");
         console.log(`Sent H1_INPROGRESS for ${key}`);
       }
-    } else if (statusCat === "tasktodo") {
+    } else if (isFullSla && statusCat === "tasktodo") {
       // Gentleman Agreement: Task To Do > 3 days (72 hours)
       const hoursInTaskToDo = calculateTimeSpentInStatus(issue, "task to do");
       
@@ -347,7 +351,7 @@ async function runSlaCheck() {
           console.log(`Sent TASK_TODO_3DAYS for ${key}`);
         }
       }
-    } else if (rawStatus.includes("revisi")) {
+    } else if (isFullSla && rawStatus.includes("revisi")) {
       // 4. Revisi (Sisa waktu = SLA - waktu terpakai In Progress)
       if (!(await hasAlertBeenSent(key, "REVISI_ENTER"))) {
         const complexity = issue.fields.customfield_10619?.value;
@@ -386,12 +390,13 @@ async function main() {
     process.exit(0);
   } else {
     console.log("╔══════════════════════════════════════════╗");
-    console.log("║  ⏳ SLA & Reminder Scheduler (10 Mins)   ║");
+    console.log("║  ⏳ SLA (10 Mins) & New Task (1 Min)     ║");
     console.log("╚══════════════════════════════════════════╝");
 
-    cron.schedule("*/10 * * * *", async () => {
+    cron.schedule("*/1 * * * *", async () => {
       try {
-        await runSlaCheck();
+        const isFullSla = new Date().getMinutes() % 10 === 0;
+        await runSlaCheck(isFullSla);
       } catch (e) {
         console.error("SLA Cron Error:", e);
       }

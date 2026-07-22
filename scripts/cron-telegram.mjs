@@ -426,29 +426,38 @@ async function runReport() {
     );
 
     // 4. Build messages: detail pages only
-    const cukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value === 'Cukai');
-    const nonCukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value !== 'Cukai');
-
-    const cukaiGrouped = groupTasksBySA(cukaiIssues);
-    const nonCukaiGrouped = groupTasksBySA(nonCukaiIssues);
-
+    const GROUP_BY_APP = process.env.GROUP_BY_APP === "true";
     const { day, date, time } = formatDateTime();
     const allMessages = [];
 
-    // Format Cukai
-    if (cukaiGrouped.length > 0) {
-      const msgs = formatDetailMessages(cukaiGrouped);
-      if (msgs.length > 0) {
-        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
-        allMessages.push(...msgs);
-      }
-    }
+    if (GROUP_BY_APP) {
+      const cukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value === 'Cukai');
+      const nonCukaiIssues = saIssues.filter(i => i.fields.customfield_10616?.value !== 'Cukai');
 
-    // Format Non Cukai
-    if (nonCukaiGrouped.length > 0) {
-      const msgs = formatDetailMessages(nonCukaiGrouped);
+      const cukaiGrouped = groupTasksBySA(cukaiIssues);
+      const nonCukaiGrouped = groupTasksBySA(nonCukaiIssues);
+
+      // Format Cukai
+      if (cukaiGrouped.length > 0) {
+        const msgs = formatDetailMessages(cukaiGrouped);
+        if (msgs.length > 0) {
+          msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+          allMessages.push(...msgs);
+        }
+      }
+
+      // Format Non Cukai
+      if (nonCukaiGrouped.length > 0) {
+        const msgs = formatDetailMessages(nonCukaiGrouped);
+        if (msgs.length > 0) {
+          msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+          allMessages.push(...msgs);
+        }
+      }
+    } else {
+      const msgs = formatDetailMessages(grouped);
       if (msgs.length > 0) {
-        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
+        msgs[0] = `📊 <b>Daily Update Bug Fixing - Tim SA</b>\n<b>Tanggal:</b> ${day}, ${date} | ${time}\n\n` + msgs[0];
         allMessages.push(...msgs);
       }
     }
