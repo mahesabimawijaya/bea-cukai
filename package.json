@@ -12,6 +12,7 @@
     "cron:whatsapp:once": "node scripts/bot-whatsapp.mjs --once-report",
     "cron:sla:whatsapp": "echo 'SLA is now bundled in cron:whatsapp. Do not run this separately.'",
     "cron:sla:whatsapp:once": "node scripts/bot-whatsapp.mjs --once-sla",
+    "cron:rekap:once": "node scripts/bot-whatsapp.mjs --once-rekap",
     "cron:sla:telegram": "node scripts/cron-sla-telegram.mjs",
     "cron:sla:telegram:once": "node scripts/cron-sla-telegram.mjs --once",
     "cron:test:mention": "node scripts/test-mention.mjs"
@@ -27,6 +28,7 @@
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "csv-parse": "^7.0.1",
     "dotenv": "^17.4.2",
     "highcharts": "^13.0.0",
     "highcharts-react-official": "^3.2.3",

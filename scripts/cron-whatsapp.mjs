@@ -280,7 +280,7 @@ function formatDateTime() {
   };
 }
 
-function getStatusEmoji(status) {
+export function getStatusEmoji(status) {
   const s = status.toLowerCase();
   if (
     s.includes("done") ||
@@ -299,7 +299,7 @@ function getStatusEmoji(status) {
   return "📌";
 }
 
-function getStatusRank(statusName) {
+export function getStatusRank(statusName) {
   const s = statusName.toLowerCase().trim();
   if (s.includes("task to do") || s.includes("open") || s.includes("to do") || s.includes("backlog")) return 1;
   if (s.includes("pending") || s.includes("wait") || s.includes("reopen")) return 2;
@@ -317,9 +317,29 @@ function formatDetailMessages(groups) {
 
   // Compute Overall Summary
   const overallTasksByStatus = {};
+  for (const group of groups) {
+    const allTasks = [...group.whatsNext, ...group.whatsDone];
+    for (const t of allTasks) {
+      const st = t.fields.status.name;
+      if (!overallTasksByStatus[st]) overallTasksByStatus[st] = 0;
+      overallTasksByStatus[st]++;
+    }
+  }
+
+  const sortedOverallStatuses = Object.keys(overallTasksByStatus).sort((a, b) => getStatusRank(a) - getStatusRank(b));
+  
+  const overallSummaryParts = [`Total SA : ${groups.length}`];
+  for (const st of sortedOverallStatuses) {
+    const count = overallTasksByStatus[st];
+    const emoji = getStatusEmoji(st);
+    overallSummaryParts.push(`${emoji} ${formatStatusDisplay(st)} : ${count}`);
+  }
+
+  const overallSection = `\n` + overallSummaryParts.join("\n") + `\n\n`;
+
   const messages = [];
   const pageHeader = `📋 *Detail per PIC*\n`;
-  let currentMessage = pageHeader;
+  let currentMessage = overallSection + pageHeader;
 
   for (const group of groups) {
     const activeTasks = [...group.whatsNext, ...group.whatsDone];
@@ -339,7 +359,7 @@ function formatDetailMessages(groups) {
     for (const st of sortedPICStatuses) {
       const tasks = tasksByStatus[st];
       const emoji = getStatusEmoji(st);
-      summaryParts.push(`${emoji} ${st} : ${tasks.length}`);
+      summaryParts.push(`${emoji} ${formatStatusDisplay(st)} : ${tasks.length}`);
     }
 
     const sectionHeader =
@@ -353,7 +373,7 @@ function formatDetailMessages(groups) {
     for (const st of sortedPICStatuses) {
       const tasks = tasksByStatus[st];
       const emoji = getStatusEmoji(st);
-      lines.push(`\n*${escapeWhatsApp(st)} ${emoji}*`);
+      lines.push(`\n*${escapeWhatsApp(formatStatusDisplay(st))} ${emoji}*`);
       for (const task of tasks) {
         lines.push(`- [${task.key}] ${escapeWhatsApp(task.fields.summary)}`);
       }
@@ -440,7 +460,7 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
         const msgs = formatDetailMessages(cukaiGrouped);
         if (msgs.length > 0) {
           msgs[0] =
-            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            `📊 *Daily Progress - Tim SA (Aplikasi Cukai)*\n${date} | ${time}\n` +
             msgs[0];
           allMessages.push(...msgs);
         }
@@ -451,7 +471,7 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
         const msgs = formatDetailMessages(nonCukaiGrouped);
         if (msgs.length > 0) {
           msgs[0] =
-            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            `📊 *Daily Progress - Tim SA (Aplikasi Non-Cukai)*\n${date} | ${time}\n` +
             msgs[0];
           allMessages.push(...msgs);
         }
@@ -460,7 +480,7 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
       const msgs = formatDetailMessages(grouped);
       if (msgs.length > 0) {
         msgs[0] =
-          `📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+          `📊 *Daily Progress - Tim SA*\n${date} | ${time}\n` +
           msgs[0];
         allMessages.push(...msgs);
       }

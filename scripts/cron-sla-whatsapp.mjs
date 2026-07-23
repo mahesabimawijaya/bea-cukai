@@ -22,7 +22,7 @@ const authHeader = JIRA_PAT
   ? `Bearer ${JIRA_PAT}`
   : `Basic ${Buffer.from(`${JIRA_USERNAME}:${JIRA_PASSWORD}`).toString("base64")}`;
 
-let dbClient;
+export let dbClient;
 
 export async function initDB() {
   if (!process.env.DATABASE_URL) {
@@ -38,6 +38,14 @@ export async function initDB() {
       alert_type VARCHAR(50) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(issue_key, alert_type)
+    );
+  `);
+
+  await dbClient.query(`
+    CREATE TABLE IF NOT EXISTS jira_rekap_state (
+      id INTEGER PRIMARY KEY,
+      last_run_date VARCHAR(20) NOT NULL,
+      buckets JSONB NOT NULL
     );
   `);
 }
@@ -277,7 +285,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
       !(await hasAlertBeenSent(key, "NEW_TODO"))
     ) {
       await sendAlertMessage(
-        `🆕 *New Task Assigned*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n\nMohon segera diproses.`,
+        `🆕 *New Task Assigned*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nMohon segera diproses.`,
       );
       await markAlertSent(key, "NEW_TODO");
       console.log(`Sent NEW_TODO for ${key}`);
@@ -291,7 +299,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         !(await hasAlertBeenSent(key, "SLA_TODO"))
       ) {
         await sendAlertMessage(
-          `⚠️ *SLA Breach: To Do*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n\nTiket belum dikerjakan (In Progress) lebih dari 1 jam sejak dibuat!`,
+          `⚠️ *SLA Breach: To Do*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket belum dikerjakan (In Progress) lebih dari 1 jam sejak dibuat!`,
         );
         await markAlertSent(key, "SLA_TODO");
         console.log(`Sent SLA_TODO for ${key}`);
@@ -312,7 +320,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         !(await hasAlertBeenSent(key, "H1_INPROGRESS"))
       ) {
         await sendAlertMessage(
-          `⏳ *SLA Reminder (H-1)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n📈 Complexity: ${complexity || "AVG"} (${totalSla} Jam)\n\nSisa waktu SLA untuk masuk ke _Code Review_ kurang dari 24 jam!`,
+          `⏳ *SLA Reminder (H-1)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n📈 Complexity: ${complexity || "AVG"} (${totalSla} Jam)\nhttps://jira.beacukai.go.id/browse/${key}\n\nSisa waktu SLA untuk masuk ke _Code Review_ kurang dari 24 jam!`,
         );
         await markAlertSent(key, "H1_INPROGRESS");
         console.log(`Sent H1_INPROGRESS for ${key}`);
@@ -333,7 +341,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         // Skip explicitly allowed task to do tickets if needed (e.g., Stresstest)
         if (!summary.toLowerCase().includes("stresstest")) {
            await sendAlertMessage(
-            `🔔 *Reminder (Gentleman Agreement)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n\nTiket ini sudah berada di antrian *Task To Do* lebih dari 3 hari. Mohon diproses dan ubah status ke _To Do_ lalu _In Progress_ jika sudah dikerjakan.`,
+            `🔔 *Reminder (Gentleman Agreement)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket ini sudah berada di antrian *Task To Do* lebih dari 3 hari. Mohon diproses dan ubah status ke _To Do_ lalu _In Progress_ jika sudah dikerjakan.`,
           );
           await markAlertSent(key, "TASK_TODO_3DAYS");
           console.log(`Sent TASK_TODO_3DAYS for ${key}`);
@@ -351,7 +359,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         const hoursRemaining = totalSla - hoursSpentInProgress;
 
         await sendAlertMessage(
-          `🔄 *Status Updated: REVISI*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n📈 Complexity: ${complexity || "AVG"} (${totalSla} Jam)\n\nSisa waktu SLA (In Progress) anda adalah: *${Math.max(0, Math.floor(hoursRemaining))} Jam*.`,
+          `🔄 *Status Updated: REVISI*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n📈 Complexity: ${complexity || "AVG"} (${totalSla} Jam)\nhttps://jira.beacukai.go.id/browse/${key}\n\nSisa waktu SLA (In Progress) anda adalah: *${Math.max(0, Math.floor(hoursRemaining))} Jam*.`,
         );
         await markAlertSent(key, "REVISI_ENTER");
         console.log(`Sent REVISI_ENTER for ${key}`);
