@@ -24,7 +24,7 @@ const authHeader = JIRA_PAT
 
 let dbClient;
 
-async function initDB() {
+export async function initDB() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is not set");
   }
@@ -57,55 +57,39 @@ async function markAlertSent(issueKey, alertType) {
   );
 }
 
-// Fonnte does not require initialization like Puppeteer.
 
-async function sendAlertMessage(text) {
-  if (!WA_GROUP_ID || !FONNTE_TOKEN) {
-    console.warn("WA_GROUP_ID or FONNTE_TOKEN not set. Message not sent:", text);
-    return;
-  }
-  
-  try {
-    const response = await fetch("https://api.fonnte.com/send", {
-      method: "POST",
-      headers: {
-        "Authorization": FONNTE_TOKEN,
-      },
-      body: new URLSearchParams({
-        target: WA_GROUP_ID,
-        message: text,
-      }),
-    });
+// ─── Constants & Configuration ──────────────────────────────────────────────
 
-    const result = await response.json();
-    if (!result.status) {
-      console.error("Fonnte API Error:", result.reason);
-    }
-  } catch (e) {
-    console.error("Failed to send Fonnte message:", e.message);
-  }
-}
+const SA_WA_NUMBERS = {
+  "willy taufik": "6281290219036",
+  "farisan": "6285176989952",
+  "rifqi": "6281807019650",
+  "ilyas": "6288215995939",
+  "rahmat": "6282249135550",
+  "nitha": "6281393739052",
+  "auliya": "6285156080516",
+  "akbar": "6289670284719",
+  "lalang": "6285711113243",
+  "sugianto": "6285773754800",
+  "laksito": "628982269145",
+};
 
-// ─── SA Team Filter ──────────────────────────────────────────────────────────
-
-const SA_TEAM_KEYWORDS = [
-  "willy taufik",
-  "farisan",
-  "rifqi",
-  "ilyas",
-  "rahmat",
-  "nitha",
-  "auliya",
-  "akbar",
-  "lalang",
-  "sugianto",
-  "laksito",
-];
+const SA_TEAM_KEYWORDS = Object.keys(SA_WA_NUMBERS);
 
 function isSAMember(displayName) {
   if (!displayName) return false;
   const lower = displayName.toLowerCase();
   return SA_TEAM_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+function formatAssigneeDisplay(name) {
+  const lower = name.toLowerCase();
+  for (const [kw, num] of Object.entries(SA_WA_NUMBERS)) {
+    if (lower.includes(kw)) {
+      return `${name} | @${num}`;
+    }
+  }
+  return name;
 }
 
 // ─── Logic Helpers ─────────────────────────────────────────────────────────
@@ -184,7 +168,7 @@ function categorizeTask(statusName) {
 
 // ─── Main Polling ──────────────────────────────────────────────────────────
 
-async function runSlaCheck(isFullSla = true) {
+export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
   const typeLabel = isFullSla ? "Full SLA" : "New Task";
   console.log(`\n🕐 [${new Date().toLocaleString()}] Running ${typeLabel} Check...`);
 
@@ -274,7 +258,7 @@ async function runSlaCheck(isFullSla = true) {
         const name = sa.displayName?.trim() || sa.name;
         if (isSAMember(name)) {
           isSA = true;
-          saNames.push(name);
+          saNames.push(formatAssigneeDisplay(name));
         }
       }
     }
@@ -383,31 +367,4 @@ async function runSlaCheck(isFullSla = true) {
   }
 }
 
-async function main() {
-  const isOnce = process.argv.includes("--once");
-  await initDB();
 
-  if (isOnce) {
-    console.log("🚀 Running one-shot SLA Check...");
-    await runSlaCheck();
-    await dbClient.end();
-    process.exit(0);
-  } else {
-    console.log("╔══════════════════════════════════════════╗");
-    console.log("║  ⏳ SLA (10 Mins) & New Task (1 Min)     ║");
-    console.log("╚══════════════════════════════════════════╝");
-
-    cron.schedule("*/1 * * * *", async () => {
-      try {
-        const isFullSla = new Date().getMinutes() % 10 === 0;
-        await runSlaCheck(isFullSla);
-      } catch (e) {
-        console.error("SLA Cron Error:", e);
-      }
-    }, {
-      recoverMissedExecutions: true
-    });
-  }
-}
-
-main().catch(console.error);

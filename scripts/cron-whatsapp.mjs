@@ -73,24 +73,36 @@ function categorizeTask(statusName) {
 
 // ─── SA Team Filter ──────────────────────────────────────────────────────────
 
-const SA_TEAM_KEYWORDS = [
-  "willy taufik",
-  "farisan",
-  "rifqi",
-  "ilyas",
-  "rahmat",
-  "nitha",
-  "auliya",
-  "akbar",
-  "lalang",
-  "sugianto",
-  "laksito",
-];
+const SA_WA_NUMBERS = {
+  "willy taufik": "6281290219036",
+  farisan: "6285176989952",
+  rifqi: "6281807019650",
+  ilyas: "6288215995939",
+  rahmat: "6282249135550",
+  nitha: "6281393739052",
+  auliya: "6285156080516",
+  akbar: "6289670284719",
+  lalang: "6285711113243",
+  sugianto: "6285773754800",
+  laksito: "628982269145",
+};
+
+const SA_TEAM_KEYWORDS = Object.keys(SA_WA_NUMBERS);
 
 function isSAMember(displayName) {
   if (!displayName) return false;
   const lower = displayName.toLowerCase();
   return SA_TEAM_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+function formatAssigneeDisplay(name) {
+  const lower = name.toLowerCase();
+  for (const [kw, num] of Object.entries(SA_WA_NUMBERS)) {
+    if (lower.includes(kw)) {
+      return `${name} | @${num}`;
+    }
+  }
+  return name;
 }
 
 // ─── Jira API ───────────────────────────────────────────────────────────────
@@ -287,16 +299,30 @@ function getStatusEmoji(status) {
   return "📌";
 }
 
+function getStatusRank(statusName) {
+  const s = statusName.toLowerCase().trim();
+  if (s.includes("task to do") || s.includes("open") || s.includes("to do") || s.includes("backlog")) return 1;
+  if (s.includes("pending") || s.includes("wait") || s.includes("reopen")) return 2;
+  if (s.includes("progress")) return 3;
+  if (s.includes("review")) return 4;
+  if (s.includes("qc") || s.includes("testing") || s.includes("staging")) return 5;
+  if (s.includes("deploy")) return 6;
+  if (s.includes("done") || s.includes("closed") || s.includes("resolved") || s.includes("invalid")) return 7;
+  return 8;
+}
+
 function formatDetailMessages(groups) {
   const SPLIT_MESSAGES = process.env.SPLIT_MESSAGES === "true";
   const MAX_LEN = 4000;
 
+  // Compute Overall Summary
+  const overallTasksByStatus = {};
   const messages = [];
   const pageHeader = `📋 *Detail per PIC*\n`;
   let currentMessage = pageHeader;
 
   for (const group of groups) {
-    const activeTasks = group.whatsNext;
+    const activeTasks = [...group.whatsNext, ...group.whatsDone];
 
     if (activeTasks.length === 0) continue;
 
@@ -307,21 +333,25 @@ function formatDetailMessages(groups) {
       tasksByStatus[st].push(t);
     });
 
+    const sortedPICStatuses = Object.keys(tasksByStatus).sort((a, b) => getStatusRank(a) - getStatusRank(b));
+
     const summaryParts = [];
-    for (const [st, tasks] of Object.entries(tasksByStatus)) {
+    for (const st of sortedPICStatuses) {
+      const tasks = tasksByStatus[st];
       const emoji = getStatusEmoji(st);
       summaryParts.push(`${emoji} ${st} : ${tasks.length}`);
     }
 
     const sectionHeader =
       `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 *${escapeWhatsApp(group.assigneeName)}*\n\n` +
+      `👤 *${escapeWhatsApp(formatAssigneeDisplay(group.assigneeName))}*\n\n` +
       `${summaryParts.join("\n")}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     const lines = [];
 
-    for (const [st, tasks] of Object.entries(tasksByStatus)) {
+    for (const st of sortedPICStatuses) {
+      const tasks = tasksByStatus[st];
       const emoji = getStatusEmoji(st);
       lines.push(`\n*${escapeWhatsApp(st)} ${emoji}*`);
       for (const task of tasks) {
@@ -363,34 +393,9 @@ function formatDetailMessages(groups) {
   return messages;
 }
 
-// ─── WhatsApp API ───────────────────────────────────────────────────────────
-
-async function sendWhatsAppMessage(text) {
-  const target = WA_GROUP_ID; // Fonnte uses the raw group ID or phone number
-  try {
-    const response = await fetch("https://api.fonnte.com/send", {
-      method: "POST",
-      headers: {
-        Authorization: FONNTE_TOKEN,
-      },
-      body: new URLSearchParams({
-        target: target,
-        message: text,
-      }),
-    });
-
-    const result = await response.json();
-    if (!result.status) {
-      console.error("Fonnte API Error:", result.reason);
-    }
-  } catch (e) {
-    console.error("Failed to send Fonnte message:", e.message);
-  }
-}
-
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-async function runReport() {
+export async function runReport(sendWhatsAppMessage, isDebug = false) {
   const timestamp = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta",
   });
@@ -434,9 +439,8 @@ async function runReport() {
       if (cukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(cukaiGrouped);
         if (msgs.length > 0) {
-          const prefix = allMessages.length === 0 ? `Dear Pak Purwandi, Pak Mugi dan Pak Tagara berikut daily report hari ini\n\n` : "";
           msgs[0] =
-            `${prefix}📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
             msgs[0];
           allMessages.push(...msgs);
         }
@@ -446,9 +450,8 @@ async function runReport() {
       if (nonCukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(nonCukaiGrouped);
         if (msgs.length > 0) {
-          const prefix = allMessages.length === 0 ? `Dear Pak Purwandi, Pak Mugi dan Pak Tagara berikut daily report hari ini\n\n` : "";
           msgs[0] =
-            `${prefix}📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+            `📊 *Daily Update Bug Fixing - Tim SA (Aplikasi Non-Cukai)*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
             msgs[0];
           allMessages.push(...msgs);
         }
@@ -457,7 +460,7 @@ async function runReport() {
       const msgs = formatDetailMessages(grouped);
       if (msgs.length > 0) {
         msgs[0] =
-          `Dear Pak Purwandi, Pak Mugi dan Pak Tagara berikut daily report hari ini\n\n📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
+          `📊 *Daily Update Bug Fixing - Tim SA*\n*Tanggal:* ${day}, ${date} | ${time}\n\n` +
           msgs[0];
         allMessages.push(...msgs);
       }
@@ -485,51 +488,3 @@ async function runReport() {
     if (error.cause) console.error(`   Cause:`, error.cause);
   }
 }
-
-// ─── Entry Point ────────────────────────────────────────────────────────────
-
-const isOnce = process.argv.includes("--once");
-const isDebug = process.argv.includes("--debug");
-
-async function main() {
-  if (isOnce) {
-    console.log("🚀 Running one-shot report...\n");
-    runReport()
-      .then(() => {
-        console.log("\n🏁 Done.");
-        process.exit(0);
-      })
-      .catch((e) => {
-        console.error(e);
-        process.exit(1);
-      });
-  } else {
-    // Schedule from env, fallback to 16:00 WIB, Monday–Friday
-    const schedule = REPORT_SCHEDULE;
-
-    console.log("╔══════════════════════════════════════════╗");
-    console.log("║  📬 WhatsApp Bot Scheduler — BUGS26      ║");
-    console.log("╠══════════════════════════════════════════╣");
-    console.log(`║  Schedule : ${schedule.padEnd(25)} ║`);
-    console.log(`║  Chat ID  : ${WA_GROUP_ID?.substring(0, 20).padEnd(25)} ║`);
-    console.log("╚══════════════════════════════════════════╝");
-    console.log("\nPress Ctrl+C to stop.\n");
-
-    cron.schedule(
-      schedule,
-      () => {
-        runReport();
-      },
-      {
-        timezone: "Asia/Jakarta",
-        recoverMissedExecutions: true,
-      },
-    );
-  }
-}
-
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason);
-});
-
-main();
