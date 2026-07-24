@@ -487,6 +487,10 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
     }
     console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
+    if (allMessages.length > 0) {
+      allMessages[allMessages.length - 1] += "\n\nDemikian update dari kami. Terima kasih";
+    }
+
     for (let i = 0; i < allMessages.length; i++) {
       if (isDebug) {
         console.log(

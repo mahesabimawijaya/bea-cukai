@@ -1,6 +1,5 @@
 import { parse } from "csv-parse/sync";
-import { dbClient } from "./cron-sla-whatsapp.mjs";
-import { getStatusRank, getStatusEmoji } from "./cron-whatsapp.mjs";
+import { getStatusRank } from "./cron-whatsapp.mjs";
 
 const DEFAULT_HEADER = "Izin Pak Pur, @6282111622789. Pak Tag, @6281382128898.\nBerikut kami sampaikan update status development saat ini. Untuk progres task yang memerlukan waktu pengerjaan paling lama adalah sebagai berikut:\n";
 
@@ -33,13 +32,6 @@ function normalizeStatus(raw) {
   return raw;
 }
 
-function pickPic(statusNorm, sa, qc) {
-  const names = new Set();
-  if (sa) sa.split(",").forEach(s => names.add(s.trim()));
-  if (qc) qc.split(",").forEach(s => names.add(s.trim()));
-  return Array.from(names).filter(Boolean).join(", ");
-}
-
 function cleanPic(pic) {
   let s = (pic || "").trim();
   if (!s || s.toLowerCase() === "none" || s.toLowerCase() === "nan") return "";
@@ -52,137 +44,140 @@ function cleanPic(pic) {
   return s;
 }
 
-function dedupeKeepOrder(items) {
-  return Array.from(new Set(items));
-}
-
-function sortByStatus(keys, rows) {
-  return keys.sort((a, b) => getStatusRank(normalizeStatus(rows[a].Status)) - getStatusRank(normalizeStatus(rows[b].Status)));
-}
-
 function formatLine(row) {
   const status = normalizeStatus(row.Status);
-  const pic = cleanPic(pickPic(status, row.SA || "", row.QC || ""));
+  const pic = cleanPic(row.PIC || "");
   let summary = (row.Summary || "").trim();
   summary = summary.replace(/\s*\r?\n\s*/g, " ");
 
-  if (pic) return `- [${row.Key}] : ${pic} | ${summary}`;
-  return `- [${row.Key}] | ${summary}`;
+  if (pic) return `- ${row.Key} ${status} : ${pic} | ${summary}`;
+  return `- ${row.Key} ${status} | ${summary}`;
 }
 
-async function loadState() {
-  const res = await dbClient.query("SELECT * FROM jira_rekap_state WHERE id = 1");
-  if (res.rowCount > 0) {
-    return {
-      last_run_date: res.rows[0].last_run_date,
-      buckets: res.rows[0].buckets
-    };
+function getWorkingDays(startDateStr, endDateStr) {
+  let count = 0;
+  let curDate = new Date(startDateStr);
+  curDate.setHours(0,0,0,0);
+  
+  const targetDate = new Date(endDateStr);
+  targetDate.setHours(0,0,0,0);
+  
+  while (curDate < targetDate) {
+    curDate.setDate(curDate.getDate() + 1);
+    const day = curDate.getDay();
+    if (day !== 0 && day !== 6) { // not Sunday (0) or Saturday (6)
+      count++;
+    }
   }
-  return {};
+  return count;
 }
 
-async function saveState(state) {
-  await dbClient.query(`
-    INSERT INTO jira_rekap_state (id, last_run_date, buckets) 
-    VALUES (1, $1, $2)
-    ON CONFLICT (id) DO UPDATE SET last_run_date = EXCLUDED.last_run_date, buckets = EXCLUDED.buckets
-  `, [state.last_run_date, state.buckets]);
-}
-
-export async function processRekap(rows, hasHeader = true) {
-  const currentKeys = new Set(Object.keys(rows));
-  const state = await loadState();
-  const lastDate = state.last_run_date;
-  const buckets = state.buckets || {}; // format: { "2": [...], "3": [...], "4": [...] }
-
-  const now = new Date();
-  now.setHours(now.getHours() + 7); // WIB
-  const today = now.toISOString().split("T")[0];
-  const sameDay = lastDate === today;
-
-  const newBuckets = {};
-
-  if (sameDay) {
-    // Tidak ada penambahan umur, hanya sync dengan data terbaru
-    for (const [ageStr, keys] of Object.entries(buckets)) {
-      const valid = keys.filter(k => currentKeys.has(k));
-      if (valid.length > 0) newBuckets[ageStr] = valid;
-    }
-    
-    // Cari yang bener-bener baru dan masukkan ke "2"
-    const prevAll = new Set(Object.values(buckets).flat());
-    const newKeys = Object.keys(rows).filter(k => !prevAll.has(k));
-    if (newKeys.length > 0) {
-      newBuckets["2"] = (newBuckets["2"] || []).concat(newKeys);
-    }
-  } else {
-    // Aging: tambah umur 1 hari
-    for (const [ageStr, keys] of Object.entries(buckets)) {
-      const age = parseInt(ageStr, 10);
-      const valid = keys.filter(k => currentKeys.has(k));
-      if (valid.length > 0) {
-        newBuckets[(age + 1).toString()] = valid;
-      }
-    }
-    
-    // Yang baru masuk ke "2"
-    const prevAll = new Set(Object.values(buckets).flat());
-    const newKeys = Object.keys(rows).filter(k => !prevAll.has(k));
-    if (newKeys.length > 0) {
-      newBuckets["2"] = newKeys;
-    }
-  }
-
-  // Sort & dedupe di setiap bucket
-  for (const ageStr of Object.keys(newBuckets)) {
-    newBuckets[ageStr] = sortByStatus(dedupeKeepOrder(newBuckets[ageStr]), rows);
-  }
-
-  await saveState({
-    last_run_date: today,
-    buckets: newBuckets
-  });
-
+function generateReportText(rows) {
   const parts = [];
-  if (hasHeader) {
-    parts.push(DEFAULT_HEADER);
+  parts.push(DEFAULT_HEADER);
+  parts.push("");
+
+  // Group by age
+  const groupedByAge = {};
+  for (const row of Object.values(rows)) {
+    if (!groupedByAge[row.Age]) groupedByAge[row.Age] = [];
+    groupedByAge[row.Age].push(row);
+  }
+
+  // Sort ages descending
+  const sortedAges = Object.keys(groupedByAge).map(Number).sort((a,b) => b - a);
+
+  for (const age of sortedAges) {
+    const items = groupedByAge[age];
+    items.sort((a, b) => getStatusRank(normalizeStatus(a.Status)) - getStatusRank(normalizeStatus(b.Status)));
+
+    parts.push(`*${age} hari kerja ${items.length} Task*`);
+    for (const row of items) {
+      parts.push(formatLine(row));
+    }
     parts.push("");
   }
 
-  // Urutkan umur dari yang paling lama ke paling baru (misal: 5, 4, 3, 2)
-  const sortedAges = Object.keys(newBuckets)
-    .map(Number)
-    .sort((a, b) => b - a);
+  return parts.join("\n").trim() + "\n\nDemikian update dari kami. Terima kasih\n";
+}
 
-  for (const age of sortedAges) {
-    const keys = newBuckets[age.toString()];
-    if (keys && keys.length > 0) {
-      parts.push(`*${age} hari kerja*\n`);
-      
-      const groupedByStatus = {};
-      for (const k of keys) {
-        const row = rows[k];
-        const st = normalizeStatus(row.Status);
-        if (!groupedByStatus[st]) groupedByStatus[st] = [];
-        groupedByStatus[st].push(k);
-      }
+// Untuk Auto-API, kita fetch tiket yang aktif
+export async function generateRekapFromAPI() {
+  const jql = `project = 'BUGS26' AND status IN ('Deploy Production', 'QC BC - Testing Staging', 'DEPLOY DEVELOPMENT', 'Code Review')`;
+  const allIssues = [];
+  let startAt = 0;
+  const maxResults = 50;
+  const authHeader = process.env.JIRA_PAT
+    ? `Bearer ${process.env.JIRA_PAT}`
+    : `Basic ${Buffer.from(`${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`).toString("base64")}`;
 
-      const sortedStatuses = Object.keys(groupedByStatus).sort((a, b) => getStatusRank(a) - getStatusRank(b));
+  while (true) {
+    const response = await fetch(`${process.env.JIRA_BASE_URL}/search`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authHeader,
+      },
+      body: JSON.stringify({
+        jql,
+        startAt,
+        maxResults,
+        fields: ["summary", "status", "assignee", "customfield_10613", "updated"],
+        expand: ["changelog"]
+      }),
+    });
 
-      for (const st of sortedStatuses) {
-        const emoji = getStatusEmoji(st);
-        parts.push(`*${st} ${emoji}*`);
-        const stKeys = groupedByStatus[st];
-        stKeys.forEach(k => parts.push(formatLine(rows[k])));
-        parts.push("");
-      }
-    }
+    if (!response.ok) throw new Error(`Jira API error: ${response.status}`);
+    const data = await response.json();
+    allIssues.push(...data.issues);
+    if (startAt + maxResults >= data.total) break;
+    startAt += maxResults;
   }
 
-  return parts.join("\n").trim() + "\n";
+  const now = new Date();
+  now.setHours(now.getHours() + 7); // Offset WIB (+7)
+  const todayStr = now.toISOString();
+
+  const rows = {};
+  for (const issue of allIssues) {
+    const assignee = issue.fields.assignee ? (issue.fields.assignee.displayName || issue.fields.assignee.name) : "";
+    const saField = issue.fields.customfield_10613 || [];
+    const saNames = saField.map(u => u.displayName || u.name);
+    
+    const allPics = new Set();
+    if (assignee) allPics.add(assignee);
+    saNames.forEach(n => allPics.add(n));
+
+    let statusDate = issue.fields.updated;
+    if (issue.changelog && issue.changelog.histories) {
+        const histories = issue.changelog.histories.sort((a,b) => new Date(b.created) - new Date(a.created));
+        for (const history of histories) {
+            const statusItem = history.items.find(i => i.field === "status");
+            if (statusItem) {
+                statusDate = history.created;
+                break;
+            }
+        }
+    }
+
+    let age = getWorkingDays(statusDate, todayStr);
+    if (age === 0) age = 1;
+
+    rows[issue.key] = {
+      Key: issue.key,
+      Status: issue.fields.status.name,
+      PIC: Array.from(allPics).join(", "),
+      Summary: issue.fields.summary || "",
+      Age: age
+    };
+  }
+
+  return generateReportText(rows);
 }
 
 export async function generateRekapFromCSV(csvBuffer) {
+  // Since CSV doesn't easily provide changelog dates, we just fallback to 1 hari kerja
+  // This function is kept for backward compatibility if someone uploads a CSV
   const records = parse(csvBuffer, {
     columns: true,
     skip_empty_lines: true,
@@ -216,68 +211,22 @@ export async function generateRekapFromCSV(csvBuffer) {
   for (const r of records) {
     const k = r[keyCol]?.trim();
     if (!k || k.toLowerCase() === 'nan' || k.toLowerCase() === 'none') continue;
+    
+    const sa = saCol ? (r[saCol]?.trim() || "") : "";
+    const qc = qcCol ? (r[qcCol]?.trim() || "") : "";
+    
+    const names = new Set();
+    if (sa) sa.split(",").forEach(s => names.add(s.trim()));
+    if (qc) qc.split(",").forEach(s => names.add(s.trim()));
+
     rows[k] = {
       Key: k,
       Status: r[statusCol]?.trim() || "",
-      SA: saCol ? (r[saCol]?.trim() || "") : "",
-      QC: qcCol ? (r[qcCol]?.trim() || "") : "",
-      Summary: r[summaryCol]?.trim() || ""
+      PIC: Array.from(names).filter(Boolean).join(", "),
+      Summary: r[summaryCol]?.trim() || "",
+      Age: 1 // Default if uploaded via CSV
     };
   }
 
-  return await processRekap(rows, true);
-}
-
-// Untuk Auto-API, kita fetch tiket yang aktif
-export async function generateRekapFromAPI() {
-  const jql = `project = 'BUGS26' AND status IN ('Deploy Production', 'QC BC - Testing Staging', 'DEPLOY DEVELOPMENT', 'Code Review')`;
-  const allIssues = [];
-  let startAt = 0;
-  const maxResults = 50;
-  const authHeader = process.env.JIRA_PAT
-    ? `Bearer ${process.env.JIRA_PAT}`
-    : `Basic ${Buffer.from(`${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`).toString("base64")}`;
-
-  while (true) {
-    const response = await fetch(`${process.env.JIRA_BASE_URL}/search`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: authHeader,
-      },
-      body: JSON.stringify({
-        jql,
-        startAt,
-        maxResults,
-        fields: ["summary", "status", "assignee", "customfield_10613"],
-      }),
-    });
-
-    if (!response.ok) throw new Error(`Jira API error: ${response.status}`);
-    const data = await response.json();
-    allIssues.push(...data.issues);
-    if (startAt + maxResults >= data.total) break;
-    startAt += maxResults;
-  }
-
-  const rows = {};
-  for (const issue of allIssues) {
-    const assignee = issue.fields.assignee ? (issue.fields.assignee.displayName || issue.fields.assignee.name) : "";
-    const saField = issue.fields.customfield_10613 || [];
-    const saNames = saField.map(u => u.displayName || u.name);
-    
-    const allPics = new Set();
-    if (assignee) allPics.add(assignee);
-    saNames.forEach(n => allPics.add(n));
-
-    rows[issue.key] = {
-      Key: issue.key,
-      Status: issue.fields.status.name,
-      SA: Array.from(allPics).join(", "),
-      QC: "",
-      Summary: issue.fields.summary || ""
-    };
-  }
-
-  return await processRekap(rows, true);
+  return generateReportText(rows);
 }
