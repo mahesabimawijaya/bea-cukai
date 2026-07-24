@@ -301,13 +301,27 @@ export function getStatusEmoji(status) {
 
 export function getStatusRank(statusName) {
   const s = statusName.toLowerCase().trim();
-  if (s.includes("task to do") || s.includes("open") || s.includes("to do") || s.includes("backlog")) return 1;
-  if (s.includes("pending") || s.includes("wait") || s.includes("reopen")) return 2;
+  if (
+    s.includes("task to do") ||
+    s.includes("open") ||
+    s.includes("to do") ||
+    s.includes("backlog")
+  )
+    return 1;
+  if (s.includes("pending") || s.includes("wait") || s.includes("reopen"))
+    return 2;
   if (s.includes("progress")) return 3;
   if (s.includes("review")) return 4;
-  if (s.includes("qc") || s.includes("testing") || s.includes("staging")) return 5;
+  if (s.includes("qc") || s.includes("testing") || s.includes("staging"))
+    return 5;
   if (s.includes("deploy")) return 6;
-  if (s.includes("done") || s.includes("closed") || s.includes("resolved") || s.includes("invalid")) return 7;
+  if (
+    s.includes("done") ||
+    s.includes("closed") ||
+    s.includes("resolved") ||
+    s.includes("invalid")
+  )
+    return 7;
   return 8;
 }
 
@@ -326,8 +340,10 @@ function formatDetailMessages(groups) {
     }
   }
 
-  const sortedOverallStatuses = Object.keys(overallTasksByStatus).sort((a, b) => getStatusRank(a) - getStatusRank(b));
-  
+  const sortedOverallStatuses = Object.keys(overallTasksByStatus).sort(
+    (a, b) => getStatusRank(a) - getStatusRank(b),
+  );
+
   const overallSummaryParts = [`Total SA : ${groups.length}`];
   for (const st of sortedOverallStatuses) {
     const count = overallTasksByStatus[st];
@@ -353,13 +369,17 @@ function formatDetailMessages(groups) {
       tasksByStatus[st].push(t);
     });
 
-    const sortedPICStatuses = Object.keys(tasksByStatus).sort((a, b) => getStatusRank(a) - getStatusRank(b));
+    const sortedPICStatuses = Object.keys(tasksByStatus).sort(
+      (a, b) => getStatusRank(a) - getStatusRank(b),
+    );
 
     const summaryParts = [];
     for (const st of sortedPICStatuses) {
       const tasks = tasksByStatus[st];
       const emoji = getStatusEmoji(st);
-      summaryParts.push(`${emoji} ${formatStatusDisplay(st)} : ${tasks.length}`);
+      summaryParts.push(
+        `${emoji} ${formatStatusDisplay(st)} : ${tasks.length}`,
+      );
     }
 
     const sectionHeader =
@@ -480,7 +500,7 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
       const msgs = formatDetailMessages(grouped);
       if (msgs.length > 0) {
         msgs[0] =
-          `📊 *Daily Progress - Tim SA*\n${date} | ${time}\n` +
+          `📊 *Daily Progress - Tim SA PT.Altros Teknologi*\n${date} | ${time}\n` +
           msgs[0];
         allMessages.push(...msgs);
       }
@@ -488,7 +508,8 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
     console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
     if (allMessages.length > 0) {
-      allMessages[allMessages.length - 1] += "\n\nDemikian update dari kami. Terima kasih";
+      allMessages[allMessages.length - 1] +=
+        "\n\nDemikian update dari kami. Terima kasih";
     }
 
     for (let i = 0; i < allMessages.length; i++) {
