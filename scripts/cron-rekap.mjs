@@ -200,7 +200,7 @@ export async function generateRekapFromAPI() {
         jql,
         startAt,
         maxResults,
-        fields: ["summary", "status", "assignee", "customfield_10613", "updated"],
+        fields: ["summary", "status", "assignee", "customfield_10613", "customfield_10662", "updated"],
         expand: ["changelog"]
       }),
     });
@@ -216,13 +216,25 @@ export async function generateRekapFromAPI() {
 
   const rows = {};
   for (const issue of allIssues) {
-    const assignee = issue.fields.assignee ? (issue.fields.assignee.displayName || issue.fields.assignee.name) : "";
-    const saField = issue.fields.customfield_10613 || [];
-    const saNames = saField.map(u => u.displayName || u.name);
-    
     const allPics = new Set();
-    if (assignee) allPics.add(assignee);
-    saNames.forEach(n => allPics.add(n));
+    const stName = (issue.fields.status.name || "").toLowerCase();
+
+    if (stName === "deploy production") {
+      // 1. Deploy Prod tanpa PIC
+    } else if (stName === "qc bc - testing staging") {
+      // 2. QC BC Testing staging PIC ambil dari kolom petugas QC
+      const qcField = issue.fields.customfield_10662;
+      if (Array.isArray(qcField)) {
+        qcField.forEach(u => allPics.add(u.displayName || u.name));
+      } else if (qcField) {
+        allPics.add(qcField.displayName || qcField.name);
+      }
+    } else {
+      // 3. Sisa nya ambil dari kolom SA tp untuk BC aja
+      const saField = issue.fields.customfield_10613 || [];
+      const saNames = saField.map(u => u.displayName || u.name);
+      saNames.forEach(n => allPics.add(n));
+    }
 
     let statusDate = issue.fields.updated;
     if (issue.changelog && issue.changelog.histories) {
