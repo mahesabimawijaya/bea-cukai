@@ -153,6 +153,7 @@ export async function generateRekapFromAPI() {
     "deploy development",
     "revisi",
     "in progress",
+    "🔴 pending",
     "pending",
     "task to do"
   ];
@@ -211,9 +212,7 @@ export async function generateRekapFromAPI() {
     startAt += maxResults;
   }
 
-  const now = new Date();
-  now.setHours(now.getHours() + 7); // Offset WIB (+7)
-  const todayStr = now.toISOString();
+  const todayStr = new Date().toISOString();
 
   const rows = {};
   for (const issue of allIssues) {

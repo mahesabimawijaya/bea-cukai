@@ -19,6 +19,7 @@ dotenv.config({ path: path.join(__dirname, "../.env.local") });
 
 const WA_GROUP_ID = process.env.WA_GROUP_ID;
 const WA_GROUP_ID_BC = process.env.WA_GROUP_ID_BC || WA_GROUP_ID;
+const WA_GROUP_ID_REPORT = process.env.WA_GROUP_ID_REPORT || WA_GROUP_ID;
 const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
 
 if (!WA_GROUP_ID) {
@@ -67,7 +68,7 @@ client.on("disconnected", (reason) => {
 // ─── Message Listener (Webhook-like) ────────────────────────────────────────
 
 client.on("message", async (msg) => {
-  if (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_BC) {
+  if (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_BC || msg.from === WA_GROUP_ID_REPORT) {
     const text = msg.body.toLowerCase();
 
     // Cek apakah bot di-mention atau dipanggil pakai "!report"
@@ -133,12 +134,12 @@ client.on("message", async (msg) => {
       return;
     }
 
-    if (msg.from === WA_GROUP_ID && (isMentioned || text.includes("!report"))) {
+    if (msg.from === WA_GROUP_ID_REPORT && isMentioned) {
       console.log(
         `💬 Received manual report request from ${msg.author || msg.from}`,
       );
       try {
-        await runReport(sendWhatsAppMessage, false);
+        await runReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT), false);
       } catch (e) {
         console.error("Manual Report Error:", e);
         await msg.reply("❌ Terjadi kesalahan saat generate report.");
@@ -210,7 +211,7 @@ async function main() {
       }
       if (isOnceReport) {
         console.log("🚀 Running one-shot Daily Report...");
-        await runReport(sendWhatsAppMessage, false);
+        await runReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT), false);
       }
       if (isOnceRekap) {
         console.log("🚀 Running one-shot Status Develop Rekap...");
@@ -274,34 +275,7 @@ async function main() {
       if (!isClientReady) return;
       try {
         console.log("⏰ Menjalankan Scheduled Daily Report...");
-        const botPhone = client.info?.wid?.user; // Nomor HP bot tanpa @c.us
-
-        const now = new Date();
-        const months = [
-          "Januari",
-          "Februari",
-          "Maret",
-          "April",
-          "Mei",
-          "Juni",
-          "Juli",
-          "Agustus",
-          "September",
-          "Oktober",
-          "November",
-          "Desember",
-        ];
-        const todayDate = `${now.getDate()} ${months[now.getMonth()]} ${now.getFullYear()}`;
-
-        const bubble1 = `Selamat sore, izin Pak Purwadi | @6282111622789, Pak Mugi | @6281517015222 dan Pak Tagara | @6281382128898\nBerikut kami sampaikan perkembangan penanganan bugs per hari ini ${todayDate} @${botPhone}`;
-
-        await sendWhatsAppMessage(bubble1);
-
-        // Jeda 3 detik biar kelihatan natural
-        await new Promise((r) => setTimeout(r, 3000));
-
-        // Bubble 2
-        await runReport(sendWhatsAppMessage, false);
+        await runReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT), false);
       } catch (e) {
         console.error("Daily Report Error:", e);
       }
