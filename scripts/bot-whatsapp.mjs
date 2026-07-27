@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(__dirname, "../.env") });
 dotenv.config({ path: path.join(__dirname, "../.env.local") });
 
 const WA_GROUP_ID = process.env.WA_GROUP_ID;
+const WA_GROUP_ID_BC = process.env.WA_GROUP_ID_BC || WA_GROUP_ID;
 const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
 
 if (!WA_GROUP_ID) {
@@ -161,7 +162,7 @@ function extractMentions(text) {
   return mentions;
 }
 
-async function sendWhatsAppMessage(text) {
+async function sendWhatsAppMessage(text, targetGroupId = WA_GROUP_ID) {
   if (!isClientReady) {
     console.warn("⚠️ Client is not ready yet. Skipping message send.");
     return;
@@ -170,7 +171,7 @@ async function sendWhatsAppMessage(text) {
   try {
     const mentions = extractMentions(text);
     // We use client.sendMessage directly with string ID mentions
-    await client.sendMessage(WA_GROUP_ID, text, {
+    await client.sendMessage(targetGroupId, text, {
       mentions: mentions,
     });
   } catch (e) {
@@ -213,7 +214,7 @@ async function main() {
       if (isOnceRekap) {
         console.log("🚀 Running one-shot Status Develop Rekap...");
         const out = await generateRekapFromAPI();
-        await sendWhatsAppMessage(out);
+        await sendWhatsAppMessage(out, WA_GROUP_ID_BC);
       }
       console.log("\n🏁 Done.");
 
@@ -322,7 +323,7 @@ async function main() {
           );
           const output = await generateRekapFromAPI();
           if (REKAP_SEND_WA) {
-            await sendWhatsAppMessage(output);
+            await sendWhatsAppMessage(output, WA_GROUP_ID_BC);
           } else {
             console.log(
               "🤫 Silent Mode: Rekap state saved, but message not sent to WhatsApp.",
