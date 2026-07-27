@@ -72,14 +72,20 @@ function getWorkingDays(startDateStr, endDateStr) {
   return count;
 }
 
-function generateReportText(rows) {
+function generateReportText(rows, summaryText = "") {
   const parts = [];
-  parts.push(DEFAULT_HEADER);
-  parts.push("");
-
+  
+  if (summaryText) {
+    parts.push(summaryText);
+    parts.push("");
+    parts.push("━━━━━━━━━━━━━━━━━━━━");
+    parts.push("");
+  }
+  
   // Group by age
   const groupedByAge = {};
   for (const row of Object.values(rows)) {
+    if (row.Age <= 1) continue; // Skip 1 hari kerja (atau 0)
     if (!groupedByAge[row.Age]) groupedByAge[row.Age] = [];
     groupedByAge[row.Age].push(row);
   }
@@ -103,13 +109,84 @@ function generateReportText(rows) {
 
 // Untuk Auto-API, kita fetch tiket yang aktif
 export async function generateRekapFromAPI() {
+  const authHeader = process.env.JIRA_PAT
+    ? `Bearer ${process.env.JIRA_PAT}`
+    : `Basic ${Buffer.from(`${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`).toString("base64")}`;
+
+  // 1. Fetch All Status Summary
+  let allStartAt = 0;
+  const statusCounts = {};
+  let totalAll = 0;
+
+  while (true) {
+    const response = await fetch(`${process.env.JIRA_BASE_URL}/search`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authHeader,
+      },
+      body: JSON.stringify({
+        jql: `project = 'BUGS26' AND status != 'Invalid'`,
+        startAt: allStartAt,
+        maxResults: 100,
+        fields: ["status"]
+      }),
+    });
+    if (!response.ok) throw new Error(`Jira API error (summary): ${response.status}`);
+    const data = await response.json();
+    totalAll = data.total;
+    for (const issue of data.issues) {
+      const st = issue.fields.status.name;
+      statusCounts[st] = (statusCounts[st] || 0) + 1;
+    }
+    if (allStartAt + 100 >= data.total) break;
+    allStartAt += 100;
+  }
+
+  const exactOrder = [
+    "done",
+    "done by ikc",
+    "deploy production",
+    "qc - uji beban",
+    "qc bc - testing staging",
+    "code review",
+    "deploy development",
+    "revisi",
+    "in progress",
+    "pending",
+    "task to do"
+  ];
+
+  const sortedStatuses = Object.keys(statusCounts).sort((a, b) => {
+      const idxA = exactOrder.indexOf(a.toLowerCase());
+      const idxB = exactOrder.indexOf(b.toLowerCase());
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      
+      const diff = getStatusRank(b) - getStatusRank(a);
+      if (diff !== 0) return diff;
+      return a.localeCompare(b);
+  });
+
+  const summaryParts = [];
+  summaryParts.push(`*Status ALL BUGS26*`);
+  let i = 1;
+  for (const st of sortedStatuses) {
+    const count = statusCounts[st];
+    const pct = totalAll > 0 ? ((count / totalAll) * 100).toFixed(1).replace(".0", "") : "0";
+    const displaySt = st.toLowerCase() === "pending" ? "🔴 Pending" : st;
+    summaryParts.push(`${i}. ${displaySt} : ${count} (${pct}%)`);
+    i++;
+  }
+  summaryParts.push(`Total : ${totalAll} (100%)`);
+  const summaryText = summaryParts.join("\n");
+
+  // 2. Fetch Issues for Aging Report
   const jql = `project = 'BUGS26' AND status IN ('Deploy Production', 'QC BC - Testing Staging', 'DEPLOY DEVELOPMENT', 'Code Review')`;
   const allIssues = [];
   let startAt = 0;
   const maxResults = 50;
-  const authHeader = process.env.JIRA_PAT
-    ? `Bearer ${process.env.JIRA_PAT}`
-    : `Basic ${Buffer.from(`${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`).toString("base64")}`;
 
   while (true) {
     const response = await fetch(`${process.env.JIRA_BASE_URL}/search`, {
@@ -172,7 +249,7 @@ export async function generateRekapFromAPI() {
     };
   }
 
-  return generateReportText(rows);
+  return generateReportText(rows, summaryText);
 }
 
 export async function generateRekapFromCSV(csvBuffer) {

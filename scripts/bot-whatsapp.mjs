@@ -92,7 +92,9 @@ client.on("message", async (msg) => {
       `[DEBUG-MSG] botId: ${botId}, mentionedIds: ${JSON.stringify(msg.mentionedIds)}, isMentioned: ${isMentioned}`,
     );
 
-    if (text.includes("!rekap")) {
+    if (
+      text.toLowerCase().includes("status all bugs26 dan progress task terlama")
+    ) {
       if (msg.hasMedia) {
         try {
           const media = await msg.downloadMedia();
@@ -119,7 +121,8 @@ client.on("message", async (msg) => {
         );
         try {
           const output = await generateRekapFromAPI();
-          await msg.reply(output);
+          const options2 = { mentions: extractMentions(output) };
+          await client.sendMessage(msg.from, output, options2);
         } catch (e) {
           console.error("Manual Rekap API Error:", e);
           await msg.reply("❌ Terjadi kesalahan saat generate Rekap API.");
