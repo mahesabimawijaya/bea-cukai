@@ -67,7 +67,7 @@ client.on("disconnected", (reason) => {
 // ─── Message Listener (Webhook-like) ────────────────────────────────────────
 
 client.on("message", async (msg) => {
-  if (msg.from === WA_GROUP_ID) {
+  if (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_BC) {
     const text = msg.body.toLowerCase();
 
     // Cek apakah bot di-mention atau dipanggil pakai "!report"
@@ -94,6 +94,7 @@ client.on("message", async (msg) => {
     );
 
     if (
+      msg.from === WA_GROUP_ID_BC &&
       text.toLowerCase().includes("status all bugs26 dan progress task terlama")
     ) {
       if (msg.hasMedia) {
@@ -132,7 +133,7 @@ client.on("message", async (msg) => {
       return;
     }
 
-    if (isMentioned || text.includes("!report")) {
+    if (msg.from === WA_GROUP_ID && (isMentioned || text.includes("!report"))) {
       console.log(
         `💬 Received manual report request from ${msg.author || msg.from}`,
       );
