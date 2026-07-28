@@ -278,6 +278,9 @@ async function main() {
     `║  Daily Snapshot: ${REPORT_SCHEDULE.padEnd(27)} ║`,
   );
   console.log(
+    `║  Excel AutoSend: 0 17 * * 1-5                ║`,
+  );
+  console.log(
     `║  Develop Rekap: ${REKAP_SCHEDULE_ENABLED ? REKAP_SCHEDULE.padEnd(28) : "DISABLED".padEnd(28)} ║`,
   );
   console.log(
@@ -325,7 +328,29 @@ async function main() {
     },
   );
 
-  // 3. Status Develop Rekap (Scheduled at 17:00)
+  // 3. Daily Excel Report Sending (Scheduled at 17:00)
+  cron.schedule(
+    "0 17 * * 1-5",
+    async () => {
+      if (!isClientReady) return;
+      try {
+        console.log("⏰ Menjalankan Scheduled Excel Report Sending (17:00)...");
+        await runReport(
+          null, // Don't send text report
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID, media),
+          false,
+        );
+      } catch (e) {
+        console.error("Excel Report Sending Cron Error:", e);
+      }
+    },
+    {
+      timezone: "Asia/Jakarta",
+      recoverMissedExecutions: true,
+    },
+  );
+
+  // 4. Status Develop Rekap (Scheduled at 17:00)
   if (REKAP_SCHEDULE_ENABLED) {
     cron.schedule(
       REKAP_SCHEDULE,
