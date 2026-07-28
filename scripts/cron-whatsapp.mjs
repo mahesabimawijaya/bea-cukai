@@ -466,6 +466,8 @@ function formatExcelRows(grouped, dateStr) {
   return formattedRows;
 }
 
+export { groupTasksBySA, formatExcelRows, writeToGoogleSheets };
+
 export async function saveDailyExcelSnapshot() {
   const timestamp = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta",
@@ -531,7 +533,17 @@ async function writeToGoogleSheets(currentRows, date) {
   let allHistoricalRows = [];
   if (dbClient) {
     try {
-      const res = await dbClient.query(`SELECT snapshot_date, rows_data FROM jira_sa_excel_history ORDER BY id ASC`);
+      const res = await dbClient.query(`SELECT snapshot_date, rows_data FROM jira_sa_excel_history`);
+      
+      const monthMap = { 'Januari': 0, 'Februari': 1, 'Maret': 2, 'April': 3, 'Mei': 4, 'Juni': 5, 'Juli': 6, 'Agustus': 7, 'September': 8, 'Oktober': 9, 'November': 10, 'Desember': 11 };
+      res.rows.sort((a, b) => {
+        const [d1, m1, y1] = a.snapshot_date.split(' ');
+        const [d2, m2, y2] = b.snapshot_date.split(' ');
+        const dateA = new Date(y1, monthMap[m1], d1);
+        const dateB = new Date(y2, monthMap[m2], d2);
+        return dateA - dateB;
+      });
+
       for (const row of res.rows) {
         if (row.snapshot_date !== date) {
           allHistoricalRows = allHistoricalRows.concat(row.rows_data);
@@ -647,18 +659,48 @@ async function writeToGoogleSheets(currentRows, date) {
 
   await sheet.saveUpdatedCells();
 
-  // Apply merges
+  // Apply merges via batchUpdate to avoid rate limits
   try {
-    await sheet.mergeCells({ startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 }); // B1:E2
-    await sheet.mergeCells({ startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 }); // B3:E3
-    await sheet.mergeCells({ startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 }); // A7:A8
-    await sheet.mergeCells({ startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 }); // B7:B8
-    await sheet.mergeCells({ startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 }); // C7:F7
-    for (const m of merges) {
-      await sheet.mergeCells(m);
+    const allMerges = [
+      { startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 },
+      { startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 },
+      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 },
+      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 },
+      { startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 },
+      ...merges
+    ];
+
+    const requests = [
+      {
+        unmergeCells: {
+          range: {
+            sheetId: sheet.sheetId,
+            startRowIndex: 0,
+            endRowIndex: finalRows.length + 20,
+            startColumnIndex: 0,
+            endColumnIndex: 6
+          }
+        }
+      },
+      ...allMerges.map(m => ({
+        mergeCells: {
+          range: {
+            sheetId: sheet.sheetId,
+            startRowIndex: m.startRowIndex,
+            endRowIndex: m.endRowIndex,
+            startColumnIndex: m.startColumnIndex,
+            endColumnIndex: m.endColumnIndex
+          },
+          mergeType: 'MERGE_ALL'
+        }
+      }))
+    ];
+
+    if (requests.length > 0) {
+      await doc._makeBatchUpdateRequest(requests);
     }
   } catch (err) {
-    console.warn("⚠️ Some cells were already merged or failed to merge:", err.message);
+    console.warn("⚠️ Failed to batch merge cells:", err.message);
   }
 
   console.log(`✅ Synced and formatted ${finalRows.length} rows to Google Sheet 'Logbook SA'.`);
