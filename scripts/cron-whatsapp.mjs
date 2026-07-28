@@ -621,8 +621,21 @@ async function writeToGoogleSheets(currentRows, date) {
   // Write Data
   let currentRow = 8; // 0-indexed, so row 9 is index 8
   const merges = [];
+  
+  let currentDate = null;
+  let currentDateStartRow = null;
 
-  for (const group of groupedByDateAndPic) {
+  for (let i = 0; i < groupedByDateAndPic.length; i++) {
+    const group = groupedByDateAndPic[i];
+    
+    if (currentDate !== group.date) {
+      if (currentDate !== null && (currentRow - 1 > currentDateStartRow)) {
+        merges.push({ startRowIndex: currentDateStartRow, endRowIndex: currentRow, startColumnIndex: 0, endColumnIndex: 1 });
+      }
+      currentDate = group.date;
+      currentDateStartRow = currentRow;
+    }
+
     const startRow = currentRow;
     for (const task of group.rows) {
       sheet.getCell(currentRow, 0).value = task.date;
@@ -652,9 +665,13 @@ async function writeToGoogleSheets(currentRows, date) {
     }
     const endRow = currentRow - 1;
     if (endRow > startRow) {
-      merges.push({ startRowIndex: startRow, endRowIndex: endRow + 1, startColumnIndex: 0, endColumnIndex: 1 });
       merges.push({ startRowIndex: startRow, endRowIndex: endRow + 1, startColumnIndex: 1, endColumnIndex: 2 });
     }
+  }
+
+  // Push the final date merge
+  if (currentDate !== null && (currentRow - 1 > currentDateStartRow)) {
+    merges.push({ startRowIndex: currentDateStartRow, endRowIndex: currentRow, startColumnIndex: 0, endColumnIndex: 1 });
   }
 
   await sheet.saveUpdatedCells();
@@ -873,7 +890,18 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
           currentGroup.rows.push(row);
         }
 
+        let currentDate = null;
+        let currentDateStartRow = null;
+
         for (const group of groupedByDateAndPic) {
+          if (currentDate !== group.date) {
+            if (currentDate !== null && (currentRow - 1 > currentDateStartRow)) {
+              sheet.mergeCells(`A${currentDateStartRow}:A${currentRow - 1}`);
+            }
+            currentDate = group.date;
+            currentDateStartRow = currentRow;
+          }
+
           const startRow = currentRow;
           for (const task of group.rows) {
             sheet.getCell(`A${currentRow}`).value = task.date;
@@ -901,9 +929,12 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
           
           const endRow = currentRow - 1;
           if (endRow > startRow) {
-            sheet.mergeCells(`A${startRow}:A${endRow}`);
             sheet.mergeCells(`B${startRow}:B${endRow}`);
           }
+        }
+
+        if (currentDate !== null && (currentRow - 1 > currentDateStartRow)) {
+          sheet.mergeCells(`A${currentDateStartRow}:A${currentRow - 1}`);
         }
 
         // Adjust column widths
