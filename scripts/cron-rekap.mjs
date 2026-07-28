@@ -24,6 +24,14 @@ const REMOVE_NAMES = [
   "Lalang Indra Susila",
 ];
 
+const LOWER_PRIORITY_SA = [
+  "dona hayatul",
+  "adhitya willy",
+  "wahyu ramadhan",
+  "andi nurrahman wicaksono",
+  "rizki s"
+];
+
 function normalizeStatus(raw) {
   raw = (raw || "").trim();
   for (const [k, v] of Object.entries(STATUS_MAP)) {
@@ -35,13 +43,15 @@ function normalizeStatus(raw) {
 function cleanPic(pic) {
   let s = (pic || "").trim();
   if (!s || s.toLowerCase() === "none" || s.toLowerCase() === "nan") return "";
-  for (const nm of REMOVE_NAMES) {
-    const reg = new RegExp(`\\b${nm}\\b`, 'gi');
-    s = s.replace(reg, "");
-  }
-  s = s.replace(/\s{2,}/g, " ").trim();
-  s = s.replace(/[\-/,]+$/, "").trim();
-  return s;
+  
+  let parts = s.split(",").map(p => p.trim()).filter(Boolean);
+  
+  parts = parts.filter(p => {
+    const pLower = p.toLowerCase();
+    return !REMOVE_NAMES.some(nm => pLower.includes(nm.toLowerCase()));
+  });
+
+  return parts.join(", ");
 }
 
 function formatLine(row) {
@@ -95,7 +105,13 @@ function generateReportText(rows, summaryText = "") {
 
   for (const age of sortedAges) {
     const items = groupedByAge[age];
-    items.sort((a, b) => getStatusRank(normalizeStatus(a.Status)) - getStatusRank(normalizeStatus(b.Status)));
+    items.sort((a, b) => {
+      const rankDiff = getStatusRank(normalizeStatus(a.Status)) - getStatusRank(normalizeStatus(b.Status));
+      if (rankDiff !== 0) return rankDiff;
+      const statDiff = normalizeStatus(a.Status).localeCompare(normalizeStatus(b.Status));
+      if (statDiff !== 0) return statDiff;
+      return (a.PIC || "").localeCompare(b.PIC || "");
+    });
 
     parts.push(`*${age} hari kerja ${items.length} Task*`);
     for (const row of items) {
@@ -251,10 +267,21 @@ export async function generateRekapFromAPI() {
     let age = getWorkingDays(statusDate, todayStr);
     if (age === 0) age = 1;
 
+    let finalPicsArr = Array.from(allPics);
+    finalPicsArr.sort((a, b) => {
+      const aLower = a.toLowerCase().trim();
+      const bLower = b.toLowerCase().trim();
+      const aHas = LOWER_PRIORITY_SA.some(name => aLower.includes(name));
+      const bHas = LOWER_PRIORITY_SA.some(name => bLower.includes(name));
+      if (aHas && !bHas) return 1;
+      if (!aHas && bHas) return -1;
+      return 0;
+    });
+
     rows[issue.key] = {
       Key: issue.key,
       Status: issue.fields.status.name,
-      PIC: Array.from(allPics).join(", "),
+      PIC: finalPicsArr.join(", "),
       Summary: issue.fields.summary || "",
       Age: age
     };

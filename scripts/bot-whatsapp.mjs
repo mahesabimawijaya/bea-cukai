@@ -3,11 +3,14 @@ import path from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
 import pkg from "whatsapp-web.js";
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from "qrcode-terminal";
 
 // Import our refactored logic
-import { runReport } from "./cron-whatsapp.mjs";
+import {
+  runReport,
+  saveDailyExcelSnapshot,
+} from "./cron-whatsapp.mjs";
 import { initDB, runSlaCheck } from "./cron-sla-whatsapp.mjs";
 import { generateRekapFromCSV, generateRekapFromAPI } from "./cron-rekap.mjs";
 
@@ -134,16 +137,40 @@ client.on("message", async (msg) => {
       return;
     }
 
-    if (msg.from === WA_GROUP_ID_REPORT && isMentioned) {
+    // 1. Text Report Trigger (BC Group)
+    if (msg.from === WA_GROUP_ID_REPORT && (isMentioned || text.includes("!report") || text.includes("@notibot")) && !text.includes("!excel")) {
       console.log(
-        `💬 Received manual report request from ${msg.author || msg.from}`,
+        `💬 Received manual TEXT report request from ${msg.author || msg.from} (text: ${text})`,
       );
       try {
-        await runReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT), false);
+        await runReport(
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT, media),
+          null, // No Excel
+          false,
+        );
       } catch (e) {
         console.error("Manual Report Error:", e);
         await msg.reply("❌ Terjadi kesalahan saat generate report.");
       }
+      return;
+    }
+
+    // 2. Excel Report Trigger (Internal SA Group)
+    if (msg.from === WA_GROUP_ID && (isMentioned || text.includes("!excel") || text.includes("!report") || text.includes("@notibot"))) {
+      console.log(
+        `💬 Received manual EXCEL report request from ${msg.author || msg.from} (text: ${text})`,
+      );
+      try {
+        await runReport(
+          null, // No Text
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID, media),
+          false,
+        );
+      } catch (e) {
+        console.error("Manual Excel Error:", e);
+        await msg.reply("❌ Terjadi kesalahan saat generate excel.");
+      }
+      return;
     }
   }
 });
@@ -164,7 +191,7 @@ function extractMentions(text) {
   return mentions;
 }
 
-async function sendWhatsAppMessage(text, targetGroupId = WA_GROUP_ID) {
+async function sendWhatsAppMessage(text, targetGroupId = WA_GROUP_ID, media = null) {
   if (!isClientReady) {
     console.warn("⚠️ Client is not ready yet. Skipping message send.");
     return;
@@ -172,10 +199,17 @@ async function sendWhatsAppMessage(text, targetGroupId = WA_GROUP_ID) {
 
   try {
     const mentions = extractMentions(text);
+    const options = { mentions };
+    let content = text;
+    
+    if (media) {
+      const mediaObj = new MessageMedia(media.mimetype, media.data, media.filename);
+      content = mediaObj;
+      options.caption = text; // send text as caption
+    }
+    
     // We use client.sendMessage directly with string ID mentions
-    await client.sendMessage(targetGroupId, text, {
-      mentions: mentions,
-    });
+    await client.sendMessage(targetGroupId, content, options);
   } catch (e) {
     console.error("Failed to send wwebjs message:", e.message);
   }
@@ -211,7 +245,11 @@ async function main() {
       }
       if (isOnceReport) {
         console.log("🚀 Running one-shot Daily Report...");
-        await runReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT), false);
+        await runReport(
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT, media),
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID, media),
+          false,
+        );
       }
       if (isOnceRekap) {
         console.log("🚀 Running one-shot Status Develop Rekap...");
@@ -233,11 +271,12 @@ async function main() {
   const REKAP_SEND_WA = process.env.REKAP_SEND_WA !== "false"; // Default true
 
   // Otherwise, we schedule the background jobs (Daemon mode)
-  console.log("╔══════════════════════════════════════════════╗");
-  console.log("║  🤖 Unified WhatsApp Bot Scheduler — BUGS26  ║");
   console.log("╠══════════════════════════════════════════════╣");
-  console.log(`║  Daily Report : ${REPORT_SCHEDULE.padEnd(28)} ║`);
+  console.log(`║  Daily Report : DISABLED (Manual Only)       ║`);
   console.log(`║  SLA Checks   : Every 1 Minute               ║`);
+  console.log(
+    `║  Daily Snapshot: ${REPORT_SCHEDULE.padEnd(27)} ║`,
+  );
   console.log(
     `║  Develop Rekap: ${REKAP_SCHEDULE_ENABLED ? REKAP_SCHEDULE.padEnd(28) : "DISABLED".padEnd(28)} ║`,
   );
@@ -268,16 +307,16 @@ async function main() {
     },
   );
 
-  // 2. Daily Report (Scheduled at 16:00)
+  // 2. Daily Historical Excel Snapshot (Scheduled at 16:00)
   cron.schedule(
     REPORT_SCHEDULE,
     async () => {
       if (!isClientReady) return;
       try {
-        console.log("⏰ Menjalankan Scheduled Daily Report...");
-        await runReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT), false);
+        console.log("⏰ Menjalankan Scheduled Excel Snapshot (Silent Mode)...");
+        await saveDailyExcelSnapshot();
       } catch (e) {
-        console.error("Daily Report Error:", e);
+        console.error("Excel Snapshot Cron Error:", e);
       }
     },
     {
@@ -294,18 +333,12 @@ async function main() {
         if (!isClientReady) return;
         try {
           console.log(
-            `⏰ Menjalankan Scheduled Status Develop Rekap... (Silent Mode: ${!REKAP_SEND_WA})`,
+            `⏰ Menjalankan Scheduled Status Develop Rekap... (Silent Mode)`,
           );
-          const output = await generateRekapFromAPI();
-          if (REKAP_SEND_WA) {
-            await sendWhatsAppMessage(output, WA_GROUP_ID_BC);
-          } else {
-            console.log(
-              "🤫 Silent Mode: Rekap state saved, but message not sent to WhatsApp.",
-            );
-          }
+          await generateRekapFromAPI();
+          console.log("✅ Rekap historical data generated silently (no WA sent).");
         } catch (e) {
-          console.error("Rekap Cron Error:", e);
+          console.error("Status Develop Rekap Cron Error:", e);
         }
       },
       {

@@ -13,6 +13,8 @@ import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
+import ExcelJS from "exceljs";
+import { dbClient } from "./cron-sla-whatsapp.mjs";
 
 // ─── Load Environment ───────────────────────────────────────────────────────
 
@@ -131,6 +133,7 @@ async function fetchJiraTasks() {
         maxResults,
         fields: [
           "summary",
+          "description",
           "status",
           "assignee",
           "customfield_10613",
@@ -433,9 +436,65 @@ function formatDetailMessages(groups) {
   return messages;
 }
 
+function formatExcelRows(grouped, dateStr) {
+  const formattedRows = [];
+  for (const group of grouped) {
+    const activeTasks = [...group.whatsNext, ...group.whatsDone];
+    activeTasks.sort(
+      (a, b) =>
+        getStatusRank(a.fields.status.name) -
+        getStatusRank(b.fields.status.name),
+    );
+
+    if (activeTasks.length === 0) continue;
+
+    for (const task of activeTasks) {
+      formattedRows.push({
+        date: dateStr,
+        pic: formatAssigneeDisplay(group.assigneeName),
+        key: task.key,
+        summary: task.fields.summary || "-",
+        link: `https://jira.beacukai.go.id/browse/${task.key}`,
+        status: task.fields.status.name,
+        rank: getStatusRank(task.fields.status.name)
+      });
+    }
+  }
+  return formattedRows;
+}
+
+export async function saveDailyExcelSnapshot() {
+  const timestamp = new Date().toLocaleString("id-ID", {
+    timeZone: "Asia/Jakarta",
+  });
+  console.log(`\n🕐 [${timestamp}] Running saveDailyExcelSnapshot...`);
+  try {
+    const issues = await fetchJiraTasks();
+    const grouped = groupTasksBySA(issues);
+
+    const { date } = formatDateTime();
+    const rows = formatExcelRows(grouped, date);
+
+    if (!dbClient) {
+      console.warn("⚠️ dbClient is not initialized! Cannot save snapshot.");
+      return;
+    }
+
+    await dbClient.query(
+      `INSERT INTO jira_sa_excel_history (snapshot_date, rows_data) 
+       VALUES ($1, $2) 
+       ON CONFLICT (snapshot_date) DO UPDATE SET rows_data = $2, created_at = CURRENT_TIMESTAMP`,
+      [date, JSON.stringify(rows)],
+    );
+    console.log(`✅ Saved ${rows.length} rows to DB for date: ${date}`);
+  } catch (err) {
+    console.error(`❌ Error in saveDailyExcelSnapshot:`, err);
+  }
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-export async function runReport(sendWhatsAppMessage, isDebug = false) {
+export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebug = false) {
   const timestamp = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta",
   });
@@ -512,6 +571,144 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
         "\n\nDemikian update dari kami. Terima kasih";
     }
 
+    // --- Excel Generation Logic with exceljs ---
+    let excelMedia = null;
+    
+    // Only generate Excel if we have sendInternalMessage
+    if (sendInternalMessage) {
+      const { date } = formatDateTime();
+      const currentRows = formatExcelRows(grouped, date);
+      
+      let allHistoricalRows = [];
+      if (dbClient) {
+        try {
+          const res = await dbClient.query(`SELECT snapshot_date, rows_data FROM jira_sa_excel_history ORDER BY id ASC`);
+          for (const row of res.rows) {
+            // Avoid adding today's live data twice if it's already in the DB
+            if (row.snapshot_date !== date) {
+              allHistoricalRows = allHistoricalRows.concat(row.rows_data);
+            }
+          }
+        } catch (dbErr) {
+          console.error("Failed to fetch historical excel data", dbErr);
+        }
+      }
+
+      const finalRows = [...allHistoricalRows, ...currentRows];
+
+      if (finalRows.length > 0) {
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet("Daily Report SA");
+
+        // 1. row 1:2 B:E diisi dengan title "LogBook PT. Altros Technology", bold, align center arial dengan ukuran 12
+        sheet.mergeCells("B1:E2");
+        const titleCell = sheet.getCell("B1");
+        titleCell.value = "LogBook PT. Altros Technology";
+        titleCell.font = { name: "Arial", size: 12, bold: true };
+        titleCell.alignment = { vertical: "middle", horizontal: "center" };
+
+        // 2. row 3 B:E diisi dengan subtitle "Project : BC - Ceisa 4.0 Th 2026", bold align center arial dengan ukuran 10
+        sheet.mergeCells("B3:E3");
+        const subtitleCell = sheet.getCell("B3");
+        subtitleCell.value = "Project : BC - Ceisa 4.0 Th 2026";
+        subtitleCell.font = { name: "Arial", size: 10, bold: true };
+        subtitleCell.alignment = { vertical: "middle", horizontal: "center" };
+
+        // 3. Header table dimulai row 7
+        sheet.mergeCells("A7:A8");
+        const hDate = sheet.getCell("A7");
+        hDate.value = "Date";
+
+        sheet.mergeCells("B7:B8");
+        const hPIC = sheet.getCell("B7");
+        hPIC.value = "PIC";
+
+        sheet.mergeCells("C7:F7");
+        const hAct = sheet.getCell("C7");
+        hAct.value = "Activity /Task";
+
+        sheet.getCell("C8").value = "Title / Subject";
+        sheet.getCell("D8").value = "Description";
+        sheet.getCell("E8").value = "Detail (Menu/Halaman/EndPoint/Repo, dll)";
+        sheet.getCell("F8").value = "Status";
+
+        // Style Headers
+        const headerCells = ["A7", "B7", "C7", "C8", "D8", "E8", "F8"];
+        for (const loc of headerCells) {
+          const cell = sheet.getCell(loc);
+          cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } }; // White
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0000FF" } }; // Blue #0000FF
+          cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+          cell.border = {
+            top: { style: "thin" }, left: { style: "thin" },
+            bottom: { style: "thin" }, right: { style: "thin" }
+          };
+        }
+
+        // Write Data
+        let currentRow = 9;
+        
+        // Group finalRows by Date -> PIC for merging
+        const groupedByDateAndPic = [];
+        let currentGroup = null;
+        for (const row of finalRows) {
+          if (!currentGroup || currentGroup.date !== row.date || currentGroup.pic !== row.pic) {
+            currentGroup = { date: row.date, pic: row.pic, rows: [] };
+            groupedByDateAndPic.push(currentGroup);
+          }
+          currentGroup.rows.push(row);
+        }
+
+        for (const group of groupedByDateAndPic) {
+          const startRow = currentRow;
+          for (const task of group.rows) {
+            sheet.getCell(`A${currentRow}`).value = task.date;
+            sheet.getCell(`B${currentRow}`).value = task.pic;
+            sheet.getCell(`C${currentRow}`).value = task.key;
+            sheet.getCell(`D${currentRow}`).value = task.summary;
+            sheet.getCell(`E${currentRow}`).value = task.link;
+            sheet.getCell(`F${currentRow}`).value = task.status;
+
+            for (let c = 1; c <= 6; c++) {
+              const cell = sheet.getRow(currentRow).getCell(c);
+              cell.font = { name: "Arial", size: 10 };
+              cell.border = {
+                top: { style: "thin" }, left: { style: "thin" },
+                bottom: { style: "thin" }, right: { style: "thin" }
+              };
+              if (c === 1 || c === 2) {
+                cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+              } else {
+                cell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+              }
+            }
+            currentRow++;
+          }
+          
+          const endRow = currentRow - 1;
+          if (endRow > startRow) {
+            sheet.mergeCells(`A${startRow}:A${endRow}`);
+            sheet.mergeCells(`B${startRow}:B${endRow}`);
+          }
+        }
+
+        // Adjust column widths
+        sheet.getColumn(1).width = 18; // Date
+        sheet.getColumn(2).width = 25; // PIC
+        sheet.getColumn(3).width = 15; // Title
+        sheet.getColumn(4).width = 40; // Description
+        sheet.getColumn(5).width = 40; // Detail
+        sheet.getColumn(6).width = 20; // Status
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        excelMedia = {
+          mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          data: buffer.toString("base64"),
+          filename: `LogBook PT. Altros Technology - ${date}.xlsx`
+        };
+      }
+    }
+
     for (let i = 0; i < allMessages.length; i++) {
       if (isDebug) {
         console.log(
@@ -520,11 +717,18 @@ export async function runReport(sendWhatsAppMessage, isDebug = false) {
         console.log(allMessages[i]);
         console.log(`\n==============================================\n`);
       } else {
-        await sendWhatsAppMessage(allMessages[i]);
-        console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
-        // Always delay 3 seconds after sending a message to prevent websocket abort on script exit
-        await new Promise((r) => setTimeout(r, 3000));
+        if (sendWhatsAppMessage) {
+          await sendWhatsAppMessage(allMessages[i]);
+          console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
+          // Always delay 3 seconds after sending a message to prevent websocket abort on script exit
+          await new Promise((r) => setTimeout(r, 3000));
+        }
       }
+    }
+
+    if (excelMedia && sendInternalMessage && !isDebug) {
+      await sendInternalMessage("📊 Berikut lampiran LogBook Daily SA:", excelMedia);
+      console.log(`📤 Sent Excel attachment to internal group`);
     }
 
     console.log(`✅ Report sent successfully!`);
