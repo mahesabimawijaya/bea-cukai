@@ -12,8 +12,11 @@
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 import cron from "node-cron";
 import ExcelJS from "exceljs";
+import { GoogleSpreadsheet } from "google-spreadsheet";
+import { JWT } from "google-auth-library";
 import { dbClient } from "./cron-sla-whatsapp.mjs";
 
 // ─── Load Environment ───────────────────────────────────────────────────────
@@ -487,9 +490,178 @@ export async function saveDailyExcelSnapshot() {
       [date, JSON.stringify(rows)],
     );
     console.log(`✅ Saved ${rows.length} rows to DB for date: ${date}`);
+
+    // Google Sheets Integration
+    try {
+      await writeToGoogleSheets(rows, date);
+    } catch (gErr) {
+      console.error(`❌ Failed to sync to Google Sheets:`, gErr);
+    }
   } catch (err) {
     console.error(`❌ Error in saveDailyExcelSnapshot:`, err);
   }
+}
+
+async function writeToGoogleSheets(currentRows, date) {
+  const SPREADSHEET_ID = "114oWjMGLGW52RmLoosNwZycDwgMaFxscO956oAKUMrY";
+  const CREDENTIALS_PATH = resolve(rootDir, "chrome-enterprise-479812-25430543c27e.json");
+
+  if (!fs.existsSync(CREDENTIALS_PATH)) {
+    console.warn(`⚠️ Google Credentials not found at ${CREDENTIALS_PATH}. Skipping Google Sheets sync.`);
+    return;
+  }
+
+  const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
+  const auth = new JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID, auth);
+  console.log(`📡 Connecting to Google Spreadsheet (ID: ${SPREADSHEET_ID})...`);
+  await doc.loadInfo();
+
+  const sheet = doc.sheetsByTitle["Logbook SA"];
+  if (!sheet) {
+    throw new Error(`Sheet 'Logbook SA' not found in the spreadsheet!`);
+  }
+
+  // Fetch historical data
+  let allHistoricalRows = [];
+  if (dbClient) {
+    try {
+      const res = await dbClient.query(`SELECT snapshot_date, rows_data FROM jira_sa_excel_history ORDER BY id ASC`);
+      for (const row of res.rows) {
+        if (row.snapshot_date !== date) {
+          allHistoricalRows = allHistoricalRows.concat(row.rows_data);
+        }
+      }
+    } catch (dbErr) {
+      console.error("Failed to fetch historical excel data for Google Sheets", dbErr);
+    }
+  }
+
+  const finalRows = [...allHistoricalRows, ...currentRows];
+  if (finalRows.length === 0) return;
+
+  // Group by Date and PIC
+  const groupedByDateAndPic = [];
+  let currentGroup = null;
+  for (const row of finalRows) {
+    if (!currentGroup || currentGroup.date !== row.date || currentGroup.pic !== row.pic) {
+      currentGroup = { date: row.date, pic: row.pic, rows: [] };
+      groupedByDateAndPic.push(currentGroup);
+    }
+    currentGroup.rows.push(row);
+  }
+
+  // Re-initialize sheet dimensions and clear
+  console.log(`🧹 Clearing Google Sheet...`);
+  await sheet.clear();
+  
+  const totalRowsNeeded = finalRows.length + 15;
+  if (sheet.rowCount < totalRowsNeeded) {
+    await sheet.resize({ rowCount: totalRowsNeeded, columnCount: 6 });
+  }
+
+  console.log(`✍️ Formatting Google Sheet...`);
+  await sheet.loadCells(`A1:F${finalRows.length + 15}`);
+
+  // 1. Title
+  const titleCell = sheet.getCellByA1('B1');
+  titleCell.value = "LogBook PT. Altros Technology";
+  titleCell.textFormat = { bold: true, fontSize: 12 };
+  titleCell.horizontalAlignment = 'CENTER';
+  titleCell.verticalAlignment = 'MIDDLE';
+
+  // 2. Subtitle
+  const subCell = sheet.getCellByA1('B3');
+  subCell.value = "Project : BC - Ceisa 4.0 Th 2026";
+  subCell.textFormat = { bold: true, fontSize: 10 };
+  subCell.horizontalAlignment = 'CENTER';
+  subCell.verticalAlignment = 'MIDDLE';
+
+  // Headers
+  const hDate = sheet.getCellByA1('A7'); hDate.value = "Date";
+  const hPIC = sheet.getCellByA1('B7'); hPIC.value = "PIC";
+  const hAct = sheet.getCellByA1('C7'); hAct.value = "Activity /Task";
+  sheet.getCellByA1('C8').value = "Title / Subject";
+  sheet.getCellByA1('D8').value = "Description";
+  sheet.getCellByA1('E8').value = "Detail (Menu/Halaman/EndPoint/Repo, dll)";
+  sheet.getCellByA1('F8').value = "Status";
+
+  const headerCells = ['A7', 'A8', 'B7', 'B8', 'C7', 'D7', 'E7', 'F7', 'C8', 'D8', 'E8', 'F8'];
+  for (const loc of headerCells) {
+    const cell = sheet.getCellByA1(loc);
+    if (loc !== 'A7' && loc !== 'A8' && loc !== 'B7' && loc !== 'B8' && loc !== 'C7' && loc !== 'C8' && loc !== 'D8' && loc !== 'E8' && loc !== 'F8' && loc !== 'D7' && loc !== 'E7' && loc !== 'F7') continue;
+    cell.textFormat = { bold: true, fontSize: 10, foregroundColor: { red: 1, green: 1, blue: 1, alpha: 1 } };
+    cell.backgroundColor = { red: 0, green: 0, blue: 1, alpha: 1 };
+    cell.horizontalAlignment = 'CENTER';
+    cell.verticalAlignment = 'MIDDLE';
+    cell.wrapStrategy = 'WRAP';
+    cell.borders = {
+      top: { style: 'SOLID' }, bottom: { style: 'SOLID' },
+      left: { style: 'SOLID' }, right: { style: 'SOLID' }
+    };
+  }
+
+  // Write Data
+  let currentRow = 8; // 0-indexed, so row 9 is index 8
+  const merges = [];
+
+  for (const group of groupedByDateAndPic) {
+    const startRow = currentRow;
+    for (const task of group.rows) {
+      sheet.getCell(currentRow, 0).value = task.date;
+      sheet.getCell(currentRow, 1).value = task.pic;
+      sheet.getCell(currentRow, 2).value = task.key;
+      sheet.getCell(currentRow, 3).value = task.summary;
+      sheet.getCell(currentRow, 4).value = task.link;
+      sheet.getCell(currentRow, 5).value = task.status;
+
+      for (let c = 0; c < 6; c++) {
+        const cell = sheet.getCell(currentRow, c);
+        cell.textFormat = { fontSize: 10 };
+        cell.borders = {
+          top: { style: 'SOLID' }, bottom: { style: 'SOLID' },
+          left: { style: 'SOLID' }, right: { style: 'SOLID' }
+        };
+        cell.wrapStrategy = 'WRAP';
+        if (c === 0 || c === 1) {
+          cell.horizontalAlignment = 'CENTER';
+          cell.verticalAlignment = 'MIDDLE';
+        } else {
+          cell.horizontalAlignment = 'LEFT';
+          cell.verticalAlignment = 'MIDDLE';
+        }
+      }
+      currentRow++;
+    }
+    const endRow = currentRow - 1;
+    if (endRow > startRow) {
+      merges.push({ startRowIndex: startRow, endRowIndex: endRow + 1, startColumnIndex: 0, endColumnIndex: 1 });
+      merges.push({ startRowIndex: startRow, endRowIndex: endRow + 1, startColumnIndex: 1, endColumnIndex: 2 });
+    }
+  }
+
+  await sheet.saveUpdatedCells();
+
+  // Apply merges
+  try {
+    await sheet.mergeCells({ startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 }); // B1:E2
+    await sheet.mergeCells({ startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 }); // B3:E3
+    await sheet.mergeCells({ startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 }); // A7:A8
+    await sheet.mergeCells({ startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 }); // B7:B8
+    await sheet.mergeCells({ startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 }); // C7:F7
+    for (const m of merges) {
+      await sheet.mergeCells(m);
+    }
+  } catch (err) {
+    console.warn("⚠️ Some cells were already merged or failed to merge:", err.message);
+  }
+
+  console.log(`✅ Synced and formatted ${finalRows.length} rows to Google Sheet 'Logbook SA'.`);
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
