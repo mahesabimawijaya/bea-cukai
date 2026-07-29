@@ -184,18 +184,32 @@ export async function writeToGoogleSheetsDev(currentRows, date) {
 
   const DATA_START_ROW = 8; // 0-indexed (row 9 in sheet)
 
-  // ── Step 1: Scan column A to detect state ─────────────────────────────────
+  // ── Step 1: Scan to detect state ─────────────────────────────────────────
+  // Column A is merged per date-group so only the top-left cell of each group
+  // has a value after merge. Column C (ticket key) is never merged → use it
+  // to reliably find the last data row.
   const scanRowCount = Math.max(sheet.rowCount, DATA_START_ROW + 10);
-  await sheet.loadCells(`A1:A${scanRowCount}`);
+  await sheet.loadCells(`A1:C${scanRowCount}`);
 
   const hasHeaders = sheet.getCellByA1("A7").value === "Date";
-  const todayRowIndices = [];
-  let lastDataRowIndex = DATA_START_ROW - 1;
 
+  // Last data row via column C (never merged)
+  let lastDataRowIndex = DATA_START_ROW - 1;
   for (let r = DATA_START_ROW; r < scanRowCount; r++) {
-    const val = sheet.getCell(r, 0).value;
-    if (val === date) todayRowIndices.push(r);
-    if (val) lastDataRowIndex = r;
+    if (sheet.getCell(r, 2).value) lastDataRowIndex = r;
+  }
+
+  // Today's rows: find first occurrence of date in col A (top-left of merge group)
+  // then extend to lastDataRowIndex (today is always the last date group)
+  let todayRowIndices = [];
+  for (let r = DATA_START_ROW; r <= lastDataRowIndex; r++) {
+    if (sheet.getCell(r, 0).value === date) {
+      todayRowIndices = Array.from(
+        { length: lastDataRowIndex - r + 1 },
+        (_, i) => r + i
+      );
+      break;
+    }
   }
 
   // ── Step 2: Delete today's rows if re-running ─────────────────────────────
@@ -221,8 +235,16 @@ export async function writeToGoogleSheetsDev(currentRows, date) {
   }
 
   // ── Step 4: Load cells for writing ────────────────────────────────────────
-  const loadEnd = Math.max(8, appendStart + currentRows.length);
-  await sheet.loadCells(`A1:F${loadEnd + 2}`);
+  // Only load the rows we're about to write — loading previous days' merged
+  // cells causes the library to dirty them, which makes saveUpdatedCells()
+  // conflict with existing merges.
+  if (!hasHeaders) {
+    // First run: need to write header block starting from row 1
+    await sheet.loadCells(`A1:F${appendStart + currentRows.length + 2}`);
+  } else {
+    // Subsequent runs: only load new data rows
+    await sheet.loadCells(`A${appendStart + 1}:F${appendStart + currentRows.length + 2}`);
+  }
 
   // Write static header block only on first run
   if (!hasHeaders) {
@@ -398,9 +420,41 @@ export async function runReportDev(sendInternalMessage, isDebug = false) {
     const { date } = formatDateTime();
     const currentRows = formatExcelRowsDev(grouped, date);
 
-    if (currentRows.length === 0) {
+    // Fetch historical rows from DB (exclude today — we use live data for today)
+    let allHistoricalRows = [];
+    if (dbClient) {
+      try {
+        const res = await dbClient.query(
+          `SELECT snapshot_date, rows_data FROM jira_dev_excel_history ORDER BY id ASC`
+        );
+        for (const row of res.rows) {
+          if (row.snapshot_date !== date) {
+            allHistoricalRows = allHistoricalRows.concat(row.rows_data);
+          }
+        }
+      } catch (dbErr) {
+        console.error("[DEV] Failed to fetch historical excel data:", dbErr);
+      }
+    }
+
+    const finalRows = [...allHistoricalRows, ...currentRows];
+
+    if (finalRows.length === 0) {
       console.log(`📭 [DEV] No rows to report.`);
       return;
+    }
+
+    console.log(`📊 [DEV] Building Excel: ${allHistoricalRows.length} historical + ${currentRows.length} today = ${finalRows.length} rows`);
+
+    // Group by Date → PIC for merge tracking
+    const groupedByDateAndPic = [];
+    let curGroup = null;
+    for (const row of finalRows) {
+      if (!curGroup || curGroup.date !== row.date || curGroup.pic !== row.pic) {
+        curGroup = { date: row.date, pic: row.pic, rows: [] };
+        groupedByDateAndPic.push(curGroup);
+      }
+      curGroup.rows.push(row);
     }
 
     // Build Excel workbook
@@ -438,62 +492,51 @@ export async function runReportDev(sendInternalMessage, isDebug = false) {
       };
     }
 
-    // Group by PIC for merge tracking
-    const picGroupsExcel = [];
-    let curPicGroup = null;
-    for (const row of currentRows) {
-      if (!curPicGroup || curPicGroup.pic !== row.pic) {
-        curPicGroup = { pic: row.pic, startRow: 0, count: 0 };
-        picGroupsExcel.push(curPicGroup);
-      }
-      curPicGroup.count++;
-    }
-
+    // Write data with date + PIC merge tracking
     let rowNum = 9;
-    let curPicIdx = 0;
-    let curPicCount = 0;
+    let curDate = null;
+    let curDateStartRow = null;
 
-    for (const task of currentRows) {
-      if (curPicCount === 0) {
-        picGroupsExcel[curPicIdx].startRow = rowNum;
-      }
-      curPicCount++;
-      if (curPicIdx < picGroupsExcel.length - 1 && curPicCount >= picGroupsExcel[curPicIdx].count) {
-        curPicIdx++;
-        curPicCount = 0;
+    for (const group of groupedByDateAndPic) {
+      if (curDate !== group.date) {
+        if (curDate !== null && rowNum - 1 > curDateStartRow) {
+          ws.mergeCells(`A${curDateStartRow}:A${rowNum - 1}`);
+        }
+        curDate = group.date;
+        curDateStartRow = rowNum;
       }
 
-      ws.getCell(`A${rowNum}`).value = task.date;
-      ws.getCell(`B${rowNum}`).value = task.pic;
-      ws.getCell(`C${rowNum}`).value = task.key;
-      ws.getCell(`D${rowNum}`).value = task.summary;
-      ws.getCell(`E${rowNum}`).value = task.link;
-      ws.getCell(`F${rowNum}`).value = task.status;
+      const picStartRow = rowNum;
+      for (const task of group.rows) {
+        ws.getCell(`A${rowNum}`).value = task.date;
+        ws.getCell(`B${rowNum}`).value = task.pic;
+        ws.getCell(`C${rowNum}`).value = task.key;
+        ws.getCell(`D${rowNum}`).value = task.summary;
+        ws.getCell(`E${rowNum}`).value = task.link;
+        ws.getCell(`F${rowNum}`).value = task.status;
 
-      for (let c = 1; c <= 6; c++) {
-        const cell = ws.getRow(rowNum).getCell(c);
-        cell.font = { name: "Arial", size: 10 };
-        cell.border = {
-          top: { style: "thin" }, left: { style: "thin" },
-          bottom: { style: "thin" }, right: { style: "thin" },
-        };
-        cell.alignment = c <= 2
-          ? { vertical: "middle", horizontal: "center", wrapText: true }
-          : { vertical: "middle", horizontal: "left", wrapText: true };
+        for (let c = 1; c <= 6; c++) {
+          const cell = ws.getRow(rowNum).getCell(c);
+          cell.font = { name: "Arial", size: 10 };
+          cell.border = {
+            top: { style: "thin" }, left: { style: "thin" },
+            bottom: { style: "thin" }, right: { style: "thin" },
+          };
+          cell.alignment = c <= 2
+            ? { vertical: "middle", horizontal: "center", wrapText: true }
+            : { vertical: "middle", horizontal: "left", wrapText: true };
+        }
+        rowNum++;
       }
-      rowNum++;
+
+      if (rowNum - 1 > picStartRow) {
+        ws.mergeCells(`B${picStartRow}:B${rowNum - 1}`);
+      }
     }
 
-    // Date merge (all rows same date)
-    if (currentRows.length > 1) {
-      ws.mergeCells(`A9:A${rowNum - 1}`);
-    }
-
-    // PIC merges
-    for (const g of picGroupsExcel) {
-      if (g.count > 1) {
-        ws.mergeCells(`B${g.startRow}:B${g.startRow + g.count - 1}`);
-      }
+    // Final date merge
+    if (curDate !== null && rowNum - 1 > curDateStartRow) {
+      ws.mergeCells(`A${curDateStartRow}:A${rowNum - 1}`);
     }
 
     ws.getColumn(1).width = 18;
@@ -511,7 +554,7 @@ export async function runReportDev(sendInternalMessage, isDebug = false) {
     };
 
     if (isDebug) {
-      console.log(`[DEV DEBUG] Would send Excel: ${currentRows.length} rows`);
+      console.log(`[DEV DEBUG] Would send Excel: ${finalRows.length} rows`);
     } else if (sendInternalMessage) {
       await sendInternalMessage("📊 Berikut lampiran LogBook Daily Developer:", excelMedia);
       console.log(`📤 [DEV] Sent Excel attachment`);

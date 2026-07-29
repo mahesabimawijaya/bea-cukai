@@ -227,6 +227,7 @@ async function main() {
   const isOnceSla = process.argv.includes("--once-sla");
   const isOnceReport = process.argv.includes("--once-report");
   const isOnceRekap = process.argv.includes("--once-rekap");
+  const isOnceDevReport = process.argv.includes("--once-dev-report");
 
   let isDbInitialized = false;
   try {
@@ -243,7 +244,7 @@ async function main() {
   client.initialize();
 
   // If we only want to run a one-shot command from terminal, we wait for client ready, run it, and exit.
-  if (isOnceSla || isOnceReport || isOnceRekap) {
+  if (isOnceSla || isOnceReport || isOnceRekap || isOnceDevReport) {
     client.on("ready", async () => {
       if (isOnceSla) {
         console.log("🚀 Running one-shot SLA Check...");
@@ -261,6 +262,13 @@ async function main() {
         console.log("🚀 Running one-shot Status Develop Rekap...");
         const out = await generateRekapFromAPI();
         await sendWhatsAppMessage(out, WA_GROUP_ID_BC);
+      }
+      if (isOnceDevReport) {
+        console.log("🚀 Running one-shot DEV Excel Report...");
+        await runReportDev(
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID_DEV, media),
+          false,
+        );
       }
       console.log("\n🏁 Done.");
 

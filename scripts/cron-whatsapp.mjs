@@ -532,21 +532,32 @@ async function writeToGoogleSheets(currentRows, date) {
   // Data starts at row index 8 (row 9 in sheet, after 2-row header block at rows 7-8)
   const DATA_START_ROW = 8;
 
-  // ── Step 1: Scan column A to detect sheet state ───────────────────────────
-  // Each row always has date written explicitly (even under merged cells),
-  // so scanning col A reliably finds every row belonging to a given date.
+  // ── Step 1: Scan to detect sheet state ────────────────────────────────────
+  // Column A is merged per date-group so only the top-left cell of each group
+  // has a value after merge. Column C (ticket key) is never merged → use it
+  // to reliably find the last data row.
   const scanRowCount = Math.max(sheet.rowCount, DATA_START_ROW + 10);
-  await sheet.loadCells(`A1:A${scanRowCount}`);
+  await sheet.loadCells(`A1:C${scanRowCount}`);
 
   const hasHeaders = sheet.getCellByA1('A7').value === 'Date';
 
-  const todayRowIndices = [];
+  // Last data row via column C (never merged)
   let lastDataRowIndex = DATA_START_ROW - 1;
-
   for (let r = DATA_START_ROW; r < scanRowCount; r++) {
-    const val = sheet.getCell(r, 0).value;
-    if (val === date) todayRowIndices.push(r);
-    if (val) lastDataRowIndex = r;
+    if (sheet.getCell(r, 2).value) lastDataRowIndex = r;
+  }
+
+  // Today's rows: find first occurrence of date in col A (top-left of merge group)
+  // then extend to lastDataRowIndex (today is always the last date group)
+  let todayRowIndices = [];
+  for (let r = DATA_START_ROW; r <= lastDataRowIndex; r++) {
+    if (sheet.getCell(r, 0).value === date) {
+      todayRowIndices = Array.from(
+        { length: lastDataRowIndex - r + 1 },
+        (_, i) => r + i
+      );
+      break;
+    }
   }
 
   // ── Step 2: Delete today's rows if re-running same day ────────────────────
@@ -571,9 +582,15 @@ async function writeToGoogleSheets(currentRows, date) {
     await sheet.resize({ rowCount: requiredRows + 20, columnCount: 6 });
   }
 
-  // ── Step 4: Load cells for writing (headers + new data area) ─────────────
-  const loadEnd = Math.max(8, appendStart + currentRows.length);
-  await sheet.loadCells(`A1:F${loadEnd + 2}`);
+  // ── Step 4: Load cells for writing ────────────────────────────────────────
+  // Only load the rows we're about to write — loading previous days' merged
+  // cells causes the library to dirty them, which makes saveUpdatedCells()
+  // conflict with existing merges.
+  if (!hasHeaders) {
+    await sheet.loadCells(`A1:F${appendStart + currentRows.length + 2}`);
+  } else {
+    await sheet.loadCells(`A${appendStart + 1}:F${appendStart + currentRows.length + 2}`);
+  }
 
   // Write static header block only on first run
   if (!hasHeaders) {
