@@ -15,7 +15,8 @@
     "cron:rekap:once": "node scripts/bot-whatsapp.mjs --once-rekap",
     "cron:sla:telegram": "node scripts/cron-sla-telegram.mjs",
     "cron:sla:telegram:once": "node scripts/cron-sla-telegram.mjs --once",
-    "cron:test:mention": "node scripts/test-mention.mjs"
+    "cron:test:mention": "node scripts/test-mention.mjs",
+    "seed:dev": "node scripts/seed-excel-dev.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

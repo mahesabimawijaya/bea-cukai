@@ -513,6 +513,8 @@ async function writeToGoogleSheets(currentRows, date) {
     return;
   }
 
+  if (currentRows.length === 0) return;
+
   const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
   const auth = new JWT({
     email: creds.client_email,
@@ -525,202 +527,180 @@ async function writeToGoogleSheets(currentRows, date) {
   await doc.loadInfo();
 
   const sheet = doc.sheetsByTitle["Logbook SA"];
-  if (!sheet) {
-    throw new Error(`Sheet 'Logbook SA' not found in the spreadsheet!`);
+  if (!sheet) throw new Error(`Sheet 'Logbook SA' not found in the spreadsheet!`);
+
+  // Data starts at row index 8 (row 9 in sheet, after 2-row header block at rows 7-8)
+  const DATA_START_ROW = 8;
+
+  // ── Step 1: Scan column A to detect sheet state ───────────────────────────
+  // Each row always has date written explicitly (even under merged cells),
+  // so scanning col A reliably finds every row belonging to a given date.
+  const scanRowCount = Math.max(sheet.rowCount, DATA_START_ROW + 10);
+  await sheet.loadCells(`A1:A${scanRowCount}`);
+
+  const hasHeaders = sheet.getCellByA1('A7').value === 'Date';
+
+  const todayRowIndices = [];
+  let lastDataRowIndex = DATA_START_ROW - 1;
+
+  for (let r = DATA_START_ROW; r < scanRowCount; r++) {
+    const val = sheet.getCell(r, 0).value;
+    if (val === date) todayRowIndices.push(r);
+    if (val) lastDataRowIndex = r;
   }
 
-  // Fetch historical data
-  let allHistoricalRows = [];
-  if (dbClient) {
-    try {
-      const res = await dbClient.query(`SELECT snapshot_date, rows_data FROM jira_sa_excel_history`);
-      
-      const monthMap = { 'Januari': 0, 'Februari': 1, 'Maret': 2, 'April': 3, 'Mei': 4, 'Juni': 5, 'Juli': 6, 'Agustus': 7, 'September': 8, 'Oktober': 9, 'November': 10, 'Desember': 11 };
-      res.rows.sort((a, b) => {
-        const [d1, m1, y1] = a.snapshot_date.split(' ');
-        const [d2, m2, y2] = b.snapshot_date.split(' ');
-        const dateA = new Date(y1, monthMap[m1], d1);
-        const dateB = new Date(y2, monthMap[m2], d2);
-        return dateA - dateB;
-      });
-
-      for (const row of res.rows) {
-        if (row.snapshot_date !== date) {
-          allHistoricalRows = allHistoricalRows.concat(row.rows_data);
-        }
+  // ── Step 2: Delete today's rows if re-running same day ────────────────────
+  if (todayRowIndices.length > 0) {
+    const deleteStart = todayRowIndices[0];
+    const deleteEnd = todayRowIndices[todayRowIndices.length - 1] + 1;
+    console.log(`🗑️ Removing ${todayRowIndices.length} existing rows for ${date}...`);
+    await doc._makeBatchUpdateRequest([{
+      deleteRange: {
+        range: { sheetId: sheet.sheetId, startRowIndex: deleteStart, endRowIndex: deleteEnd },
+        shiftDimension: 'ROWS'
       }
-    } catch (dbErr) {
-      console.error("Failed to fetch historical excel data for Google Sheets", dbErr);
+    }]);
+    lastDataRowIndex -= todayRowIndices.length;
+    await doc.loadInfo(); // refresh sheet metadata after row deletion
+  }
+
+  // ── Step 3: Expand sheet if needed ───────────────────────────────────────
+  const appendStart = lastDataRowIndex + 1;
+  const requiredRows = appendStart + currentRows.length + 5;
+  if (sheet.rowCount < requiredRows) {
+    await sheet.resize({ rowCount: requiredRows + 20, columnCount: 6 });
+  }
+
+  // ── Step 4: Load cells for writing (headers + new data area) ─────────────
+  const loadEnd = Math.max(8, appendStart + currentRows.length);
+  await sheet.loadCells(`A1:F${loadEnd + 2}`);
+
+  // Write static header block only on first run
+  if (!hasHeaders) {
+    console.log(`✍️ Writing header block (first time)...`);
+
+    const titleCell = sheet.getCellByA1('B1');
+    titleCell.value = "LogBook PT. Altros Technology";
+    titleCell.textFormat = { bold: true, fontSize: 12 };
+    titleCell.horizontalAlignment = 'CENTER';
+    titleCell.verticalAlignment = 'MIDDLE';
+
+    const subCell = sheet.getCellByA1('B3');
+    subCell.value = "Project : BC - Ceisa 4.0 Th 2026";
+    subCell.textFormat = { bold: true, fontSize: 10 };
+    subCell.horizontalAlignment = 'CENTER';
+    subCell.verticalAlignment = 'MIDDLE';
+
+    sheet.getCellByA1('A7').value = "Date";
+    sheet.getCellByA1('B7').value = "PIC";
+    sheet.getCellByA1('C7').value = "Activity /Task";
+    sheet.getCellByA1('C8').value = "Title / Subject";
+    sheet.getCellByA1('D8').value = "Description";
+    sheet.getCellByA1('E8').value = "Detail (Menu/Halaman/EndPoint/Repo, dll)";
+    sheet.getCellByA1('F8').value = "Status";
+
+    for (const loc of ['A7', 'A8', 'B7', 'B8', 'C7', 'D7', 'E7', 'F7', 'C8', 'D8', 'E8', 'F8']) {
+      const cell = sheet.getCellByA1(loc);
+      cell.textFormat = { bold: true, fontSize: 10, foregroundColor: { red: 1, green: 1, blue: 1, alpha: 1 } };
+      cell.backgroundColor = { red: 0, green: 0, blue: 1, alpha: 1 };
+      cell.horizontalAlignment = 'CENTER';
+      cell.verticalAlignment = 'MIDDLE';
+      cell.wrapStrategy = 'WRAP';
+      cell.borders = {
+        top: { style: 'SOLID' }, bottom: { style: 'SOLID' },
+        left: { style: 'SOLID' }, right: { style: 'SOLID' }
+      };
     }
   }
 
-  const finalRows = [...allHistoricalRows, ...currentRows];
-  if (finalRows.length === 0) return;
+  // ── Step 5: Append today's rows ───────────────────────────────────────────
+  console.log(`✍️ Appending ${currentRows.length} rows for ${date} at row ${appendStart + 1}...`);
 
-  // Group by Date and PIC
-  const groupedByDateAndPic = [];
-  let currentGroup = null;
-  for (const row of finalRows) {
-    if (!currentGroup || currentGroup.date !== row.date || currentGroup.pic !== row.pic) {
-      currentGroup = { date: row.date, pic: row.pic, rows: [] };
-      groupedByDateAndPic.push(currentGroup);
+  // Track PIC groups for merge calculation
+  const picGroups = [];
+  let currentPicGroup = null;
+  let writeRow = appendStart;
+
+  for (const task of currentRows) {
+    if (!currentPicGroup || currentPicGroup.pic !== task.pic) {
+      currentPicGroup = { pic: task.pic, startRow: writeRow, count: 0 };
+      picGroups.push(currentPicGroup);
     }
-    currentGroup.rows.push(row);
-  }
+    currentPicGroup.count++;
 
-  // Re-initialize sheet dimensions and clear
-  console.log(`🧹 Clearing Google Sheet...`);
-  await sheet.clear();
-  
-  const totalRowsNeeded = finalRows.length + 15;
-  if (sheet.rowCount < totalRowsNeeded) {
-    await sheet.resize({ rowCount: totalRowsNeeded, columnCount: 6 });
-  }
+    sheet.getCell(writeRow, 0).value = task.date;
+    sheet.getCell(writeRow, 1).value = task.pic;
+    sheet.getCell(writeRow, 2).value = task.key;
+    sheet.getCell(writeRow, 3).value = task.summary;
+    sheet.getCell(writeRow, 4).value = task.link;
+    sheet.getCell(writeRow, 5).value = task.status;
 
-  console.log(`✍️ Formatting Google Sheet...`);
-  await sheet.loadCells(`A1:F${finalRows.length + 15}`);
-
-  // 1. Title
-  const titleCell = sheet.getCellByA1('B1');
-  titleCell.value = "LogBook PT. Altros Technology";
-  titleCell.textFormat = { bold: true, fontSize: 12 };
-  titleCell.horizontalAlignment = 'CENTER';
-  titleCell.verticalAlignment = 'MIDDLE';
-
-  // 2. Subtitle
-  const subCell = sheet.getCellByA1('B3');
-  subCell.value = "Project : BC - Ceisa 4.0 Th 2026";
-  subCell.textFormat = { bold: true, fontSize: 10 };
-  subCell.horizontalAlignment = 'CENTER';
-  subCell.verticalAlignment = 'MIDDLE';
-
-  // Headers
-  const hDate = sheet.getCellByA1('A7'); hDate.value = "Date";
-  const hPIC = sheet.getCellByA1('B7'); hPIC.value = "PIC";
-  const hAct = sheet.getCellByA1('C7'); hAct.value = "Activity /Task";
-  sheet.getCellByA1('C8').value = "Title / Subject";
-  sheet.getCellByA1('D8').value = "Description";
-  sheet.getCellByA1('E8').value = "Detail (Menu/Halaman/EndPoint/Repo, dll)";
-  sheet.getCellByA1('F8').value = "Status";
-
-  const headerCells = ['A7', 'A8', 'B7', 'B8', 'C7', 'D7', 'E7', 'F7', 'C8', 'D8', 'E8', 'F8'];
-  for (const loc of headerCells) {
-    const cell = sheet.getCellByA1(loc);
-    if (loc !== 'A7' && loc !== 'A8' && loc !== 'B7' && loc !== 'B8' && loc !== 'C7' && loc !== 'C8' && loc !== 'D8' && loc !== 'E8' && loc !== 'F8' && loc !== 'D7' && loc !== 'E7' && loc !== 'F7') continue;
-    cell.textFormat = { bold: true, fontSize: 10, foregroundColor: { red: 1, green: 1, blue: 1, alpha: 1 } };
-    cell.backgroundColor = { red: 0, green: 0, blue: 1, alpha: 1 };
-    cell.horizontalAlignment = 'CENTER';
-    cell.verticalAlignment = 'MIDDLE';
-    cell.wrapStrategy = 'WRAP';
-    cell.borders = {
-      top: { style: 'SOLID' }, bottom: { style: 'SOLID' },
-      left: { style: 'SOLID' }, right: { style: 'SOLID' }
-    };
-  }
-
-  // Write Data
-  let currentRow = 8; // 0-indexed, so row 9 is index 8
-  const merges = [];
-  
-  let currentDate = null;
-  let currentDateStartRow = null;
-
-  for (let i = 0; i < groupedByDateAndPic.length; i++) {
-    const group = groupedByDateAndPic[i];
-    
-    if (currentDate !== group.date) {
-      if (currentDate !== null && (currentRow - 1 > currentDateStartRow)) {
-        merges.push({ startRowIndex: currentDateStartRow, endRowIndex: currentRow, startColumnIndex: 0, endColumnIndex: 1 });
-      }
-      currentDate = group.date;
-      currentDateStartRow = currentRow;
+    for (let c = 0; c < 6; c++) {
+      const cell = sheet.getCell(writeRow, c);
+      cell.textFormat = { fontSize: 10 };
+      cell.borders = {
+        top: { style: 'SOLID' }, bottom: { style: 'SOLID' },
+        left: { style: 'SOLID' }, right: { style: 'SOLID' }
+      };
+      cell.wrapStrategy = 'WRAP';
+      cell.horizontalAlignment = c <= 1 ? 'CENTER' : 'LEFT';
+      cell.verticalAlignment = 'MIDDLE';
     }
-
-    const startRow = currentRow;
-    for (const task of group.rows) {
-      sheet.getCell(currentRow, 0).value = task.date;
-      sheet.getCell(currentRow, 1).value = task.pic;
-      sheet.getCell(currentRow, 2).value = task.key;
-      sheet.getCell(currentRow, 3).value = task.summary;
-      sheet.getCell(currentRow, 4).value = task.link;
-      sheet.getCell(currentRow, 5).value = task.status;
-
-      for (let c = 0; c < 6; c++) {
-        const cell = sheet.getCell(currentRow, c);
-        cell.textFormat = { fontSize: 10 };
-        cell.borders = {
-          top: { style: 'SOLID' }, bottom: { style: 'SOLID' },
-          left: { style: 'SOLID' }, right: { style: 'SOLID' }
-        };
-        cell.wrapStrategy = 'WRAP';
-        if (c === 0 || c === 1) {
-          cell.horizontalAlignment = 'CENTER';
-          cell.verticalAlignment = 'MIDDLE';
-        } else {
-          cell.horizontalAlignment = 'LEFT';
-          cell.verticalAlignment = 'MIDDLE';
-        }
-      }
-      currentRow++;
-    }
-    const endRow = currentRow - 1;
-    if (endRow > startRow) {
-      merges.push({ startRowIndex: startRow, endRowIndex: endRow + 1, startColumnIndex: 1, endColumnIndex: 2 });
-    }
-  }
-
-  // Push the final date merge
-  if (currentDate !== null && (currentRow - 1 > currentDateStartRow)) {
-    merges.push({ startRowIndex: currentDateStartRow, endRowIndex: currentRow, startColumnIndex: 0, endColumnIndex: 1 });
+    writeRow++;
   }
 
   await sheet.saveUpdatedCells();
 
-  // Apply merges via batchUpdate to avoid rate limits
-  try {
-    const allMerges = [
-      { startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 },
-      { startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 },
-      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 },
-      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 },
-      { startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 },
-      ...merges
-    ];
+  // ── Step 6: Apply merges only for today's new rows ────────────────────────
+  const mergeRequests = [];
 
-    const requests = [
-      {
-        unmergeCells: {
-          range: {
-            sheetId: sheet.sheetId,
-            startRowIndex: 0,
-            endRowIndex: finalRows.length + 20,
-            startColumnIndex: 0,
-            endColumnIndex: 6
-          }
-        }
-      },
-      ...allMerges.map(m => ({
-        mergeCells: {
-          range: {
-            sheetId: sheet.sheetId,
-            startRowIndex: m.startRowIndex,
-            endRowIndex: m.endRowIndex,
-            startColumnIndex: m.startColumnIndex,
-            endColumnIndex: m.endColumnIndex
-          },
-          mergeType: 'MERGE_ALL'
-        }
-      }))
-    ];
-
-    if (requests.length > 0) {
-      await doc._makeBatchUpdateRequest(requests);
-    }
-  } catch (err) {
-    console.warn("⚠️ Failed to batch merge cells:", err.message);
+  // One-time header merges
+  if (!hasHeaders) {
+    mergeRequests.push(
+      { startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 },  // B1:E2 title
+      { startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 },  // B3:E3 subtitle
+      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 },  // A7:A8 Date header
+      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 },  // B7:B8 PIC header
+      { startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 },  // C7:F7 Activity header
+    );
   }
 
-  console.log(`✅ Synced and formatted ${finalRows.length} rows to Google Sheet 'Logbook SA'.`);
+  // Date column merge (all of today's rows share the same date)
+  if (currentRows.length > 1) {
+    mergeRequests.push({
+      startRowIndex: appendStart,
+      endRowIndex: appendStart + currentRows.length,
+      startColumnIndex: 0,
+      endColumnIndex: 1,
+    });
+  }
+
+  // PIC column merges (per PIC group within today)
+  for (const group of picGroups) {
+    if (group.count > 1) {
+      mergeRequests.push({
+        startRowIndex: group.startRow,
+        endRowIndex: group.startRow + group.count,
+        startColumnIndex: 1,
+        endColumnIndex: 2,
+      });
+    }
+  }
+
+  if (mergeRequests.length > 0) {
+    try {
+      await doc._makeBatchUpdateRequest(mergeRequests.map(m => ({
+        mergeCells: {
+          range: { sheetId: sheet.sheetId, ...m },
+          mergeType: 'MERGE_ALL'
+        }
+      })));
+    } catch (err) {
+      console.warn("⚠️ Failed to apply merges:", err.message);
+    }
+  }
+
+  console.log(`✅ Appended ${currentRows.length} rows for ${date} to Google Sheet 'Logbook SA'.`);
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────

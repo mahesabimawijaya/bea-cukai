@@ -57,6 +57,15 @@ export async function initDB() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  await dbClient.query(`
+    CREATE TABLE IF NOT EXISTS jira_dev_excel_history (
+      id SERIAL PRIMARY KEY,
+      snapshot_date VARCHAR(20) UNIQUE NOT NULL,
+      rows_data JSONB NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 }
 
 async function hasAlertBeenSent(issueKey, alertType) {

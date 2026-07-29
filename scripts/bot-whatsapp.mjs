@@ -11,6 +11,10 @@ import {
   runReport,
   saveDailyExcelSnapshot,
 } from "./cron-whatsapp.mjs";
+import {
+  saveDailyExcelSnapshotDev,
+  runReportDev,
+} from "./cron-whatsapp-dev.mjs";
 import { initDB, runSlaCheck } from "./cron-sla-whatsapp.mjs";
 import { generateRekapFromCSV, generateRekapFromAPI } from "./cron-rekap.mjs";
 
@@ -23,7 +27,9 @@ dotenv.config({ path: path.join(__dirname, "../.env.local") });
 const WA_GROUP_ID = process.env.WA_GROUP_ID;
 const WA_GROUP_ID_BC = process.env.WA_GROUP_ID_BC || WA_GROUP_ID;
 const WA_GROUP_ID_REPORT = process.env.WA_GROUP_ID_REPORT || WA_GROUP_ID;
+const WA_GROUP_ID_DEV = process.env.WA_GROUP_ID_DEV || WA_GROUP_ID;
 const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "3 16 * * 1-5";
+const DEV_REPORT_SCHEDULE = process.env.DEV_REPORT_SCHEDULE || "5 16 * * 1-5";
 
 if (!WA_GROUP_ID) {
   console.error("Missing WA_GROUP_ID in .env");
@@ -274,18 +280,13 @@ async function main() {
   console.log("╠══════════════════════════════════════════════╣");
   console.log(`║  Daily Report : DISABLED (Manual Only)       ║`);
   console.log(`║  SLA Checks   : Every 1 Minute               ║`);
-  console.log(
-    `║  Daily Snapshot: ${REPORT_SCHEDULE.padEnd(27)} ║`,  // offset from SLA check to avoid collision
-  );
-  console.log(
-    `║  Excel AutoSend: 0 17 * * 1-5                ║`,
-  );
-  console.log(
-    `║  Develop Rekap: ${REKAP_SCHEDULE_ENABLED ? REKAP_SCHEDULE.padEnd(28) : "DISABLED".padEnd(28)} ║`,
-  );
-  console.log(
-    `║  Target Group : ${WA_GROUP_ID?.substring(0, 28).padEnd(28)} ║`,
-  );
+  console.log(`║  SA Snapshot  : ${REPORT_SCHEDULE.padEnd(27)} ║`);
+  console.log(`║  SA Excel Send: 0 17 * * 1-5                 ║`);
+  console.log(`║  DEV Snapshot : ${DEV_REPORT_SCHEDULE.padEnd(27)} ║`);
+  console.log(`║  DEV Excel Snd: 5 17 * * 1-5                 ║`);
+  console.log(`║  Develop Rekap: ${REKAP_SCHEDULE_ENABLED ? REKAP_SCHEDULE.padEnd(28) : "DISABLED".padEnd(28)} ║`);
+  console.log(`║  SA Group     : ${WA_GROUP_ID?.substring(0, 27).padEnd(27)} ║`);
+  console.log(`║  DEV Group    : ${WA_GROUP_ID_DEV?.substring(0, 27).padEnd(27)} ║`);
   console.log("╚══════════════════════════════════════════════╝");
   console.log("\nBot will start scheduling after WhatsApp is ready...\n");
 
@@ -360,7 +361,56 @@ async function main() {
     },
   );
 
-  // 4. Status Develop Rekap (Scheduled at 17:00)
+  // 4. Developer Daily Snapshot (16:05 — offset 2 min after SA snapshot)
+  cron.schedule(
+    DEV_REPORT_SCHEDULE,
+    async () => {
+      if (!isClientReady) return;
+      let attempt = 0;
+      const maxAttempts = 3;
+      while (attempt < maxAttempts) {
+        attempt++;
+        try {
+          console.log(`⏰ Menjalankan Scheduled DEV Excel Snapshot (attempt ${attempt}/${maxAttempts})...`);
+          await saveDailyExcelSnapshotDev();
+          break;
+        } catch (e) {
+          console.error(`DEV Snapshot Cron Error (attempt ${attempt}):`, e);
+          if (attempt < maxAttempts) {
+            console.log(`⏳ Retrying in 60 seconds...`);
+            await new Promise((r) => setTimeout(r, 60_000));
+          }
+        }
+      }
+    },
+    {
+      timezone: "Asia/Jakarta",
+      recoverMissedExecutions: true,
+    },
+  );
+
+  // 5. Developer Excel Report Sending (17:05)
+  cron.schedule(
+    "5 17 * * 1-5",
+    async () => {
+      if (!isClientReady) return;
+      try {
+        console.log("⏰ Menjalankan Scheduled DEV Excel Report Sending (17:05)...");
+        await runReportDev(
+          (text, media) => sendWhatsAppMessage(text, WA_GROUP_ID_DEV, media),
+          false,
+        );
+      } catch (e) {
+        console.error("DEV Excel Report Sending Cron Error:", e);
+      }
+    },
+    {
+      timezone: "Asia/Jakarta",
+      recoverMissedExecutions: true,
+    },
+  );
+
+  // 6. Status Develop Rekap (Scheduled at 17:00)
   if (REKAP_SCHEDULE_ENABLED) {
     cron.schedule(
       REKAP_SCHEDULE,

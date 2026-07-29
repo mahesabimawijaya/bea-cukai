@@ -133,20 +133,22 @@ async function runSeeder() {
 
       // Save to DB
       await dbClient.query(
-        `INSERT INTO jira_sa_excel_history (snapshot_date, rows_data) 
+        `INSERT INTO jira_sa_excel_history (snapshot_date, rows_data)
          VALUES ($1, $2)
-         ON CONFLICT (snapshot_date) 
+         ON CONFLICT (snapshot_date)
          DO UPDATE SET rows_data = $2`,
         [dateStr, JSON.stringify(rows)]
       );
-      
       console.log(`   ✅ Disimpan ${rows.length} rows ke DB.`);
+
+      // Append this day to Google Sheets immediately (append-only approach)
+      if (rows.length > 0) {
+        await writeToGoogleSheets(rows, dateStr);
+      }
+
+      await new Promise((r) => setTimeout(r, 500));
     }
 
-    console.log("\n📡 Menyelaraskan seluruh data DB ke Google Sheets...");
-    // Pass empty currentRows, date = 'dummy' so it fetches ALL dates from DB
-    await writeToGoogleSheets([], 'DUMMY_DATE_TO_FORCE_ALL');
-    
     console.log("\n🎉 Seeding selesai!");
 
   } catch (error) {
