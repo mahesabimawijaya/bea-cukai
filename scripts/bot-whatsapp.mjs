@@ -23,7 +23,7 @@ dotenv.config({ path: path.join(__dirname, "../.env.local") });
 const WA_GROUP_ID = process.env.WA_GROUP_ID;
 const WA_GROUP_ID_BC = process.env.WA_GROUP_ID_BC || WA_GROUP_ID;
 const WA_GROUP_ID_REPORT = process.env.WA_GROUP_ID_REPORT || WA_GROUP_ID;
-const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
+const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "3 16 * * 1-5";
 
 if (!WA_GROUP_ID) {
   console.error("Missing WA_GROUP_ID in .env");
@@ -275,7 +275,7 @@ async function main() {
   console.log(`║  Daily Report : DISABLED (Manual Only)       ║`);
   console.log(`║  SLA Checks   : Every 1 Minute               ║`);
   console.log(
-    `║  Daily Snapshot: ${REPORT_SCHEDULE.padEnd(27)} ║`,
+    `║  Daily Snapshot: ${REPORT_SCHEDULE.padEnd(27)} ║`,  // offset from SLA check to avoid collision
   );
   console.log(
     `║  Excel AutoSend: 0 17 * * 1-5                ║`,
@@ -310,16 +310,26 @@ async function main() {
     },
   );
 
-  // 2. Daily Historical Excel Snapshot (Scheduled at 16:00)
+  // 2. Daily Historical Excel Snapshot (Scheduled at 16:03 — offset 3 min to avoid SLA check collision at 16:00)
   cron.schedule(
     REPORT_SCHEDULE,
     async () => {
       if (!isClientReady) return;
-      try {
-        console.log("⏰ Menjalankan Scheduled Excel Snapshot (Silent Mode)...");
-        await saveDailyExcelSnapshot();
-      } catch (e) {
-        console.error("Excel Snapshot Cron Error:", e);
+      let attempt = 0;
+      const maxAttempts = 3;
+      while (attempt < maxAttempts) {
+        attempt++;
+        try {
+          console.log(`⏰ Menjalankan Scheduled Excel Snapshot (attempt ${attempt}/${maxAttempts})...`);
+          await saveDailyExcelSnapshot();
+          break;
+        } catch (e) {
+          console.error(`Excel Snapshot Cron Error (attempt ${attempt}):`, e);
+          if (attempt < maxAttempts) {
+            console.log(`⏳ Retrying in 60 seconds...`);
+            await new Promise((r) => setTimeout(r, 60_000));
+          }
+        }
       }
     },
     {
