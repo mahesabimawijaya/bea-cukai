@@ -86,7 +86,7 @@ async function markAlertSent(issueKey, alertType) {
 
 // ─── Constants & Configuration ──────────────────────────────────────────────
 
-const SA_WA_NUMBERS = {
+export const SA_WA_NUMBERS = {
   "willy taufik": "6281290219036",
   "farisan": "6285176989952",
   "rifqi": "6281807019650",

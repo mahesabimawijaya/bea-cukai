@@ -24,6 +24,11 @@
 .DS_Store
 *.pem
 
+# client certificates (Plato mTLS)
+*.p12
+*.pfx
+/certs/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

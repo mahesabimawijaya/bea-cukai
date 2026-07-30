@@ -17,6 +17,7 @@ import {
 } from "./cron-whatsapp-dev.mjs";
 import { initDB, runSlaCheck } from "./cron-sla-whatsapp.mjs";
 import { generateRekapFromCSV, generateRekapFromAPI } from "./cron-rekap.mjs";
+import { runPlatoReport } from "./cron-plato.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +31,9 @@ const WA_GROUP_ID_REPORT = process.env.WA_GROUP_ID_REPORT || WA_GROUP_ID;
 const WA_GROUP_ID_DEV = process.env.WA_GROUP_ID_DEV || WA_GROUP_ID;
 const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "3 16 * * 1-5";
 const DEV_REPORT_SCHEDULE = process.env.DEV_REPORT_SCHEDULE || "5 16 * * 1-5";
+// Top-10 Plato: mingguan, Jumat 16:10 (offset agar tidak bentrok snapshot 16:03 & 16:05)
+const PLATO_SCHEDULE = process.env.PLATO_SCHEDULE || "10 16 * * 5";
+const PLATO_SCHEDULE_ENABLED = process.env.PLATO_SCHEDULE_ENABLED === "true";
 
 if (!WA_GROUP_ID) {
   console.error("Missing WA_GROUP_ID in .env");
@@ -143,6 +147,23 @@ client.on("message", async (msg) => {
       return;
     }
 
+    // 0. Plato Top-10 Trigger (Internal SA Group) — keyword hint "top 10" / "top-10"
+    if (msg.from === WA_GROUP_ID && (text.includes("top 10") || text.includes("top-10"))) {
+      console.log(
+        `💬 Received manual PLATO Top-10 request from ${msg.author || msg.from}`,
+      );
+      try {
+        await runPlatoReport(
+          (t) => sendWhatsAppMessage(t, WA_GROUP_ID),
+          false,
+        );
+      } catch (e) {
+        console.error("Manual Plato Error:", e);
+        await msg.reply(`❌ Gagal generate Top-10 Plato: ${e.message}`);
+      }
+      return;
+    }
+
     // 1. Text Report Trigger (BC Group)
     if (msg.from === WA_GROUP_ID_REPORT && (isMentioned || text.includes("!report") || text.includes("@notibot")) && !text.includes("!excel")) {
       console.log(
@@ -228,6 +249,15 @@ async function main() {
   const isOnceReport = process.argv.includes("--once-report");
   const isOnceRekap = process.argv.includes("--once-rekap");
   const isOnceDevReport = process.argv.includes("--once-dev-report");
+  const isOncePlato = process.argv.includes("--once-plato");
+  // Preview di terminal saja, tanpa kirim WA & tanpa butuh WhatsApp client.
+  const isPlatoDryRun = process.argv.includes("--plato-dry-run");
+
+  if (isPlatoDryRun) {
+    console.log("🚀 Running Plato Top-10 (DRY RUN — tidak dikirim ke WA)...");
+    await runPlatoReport(null, true);
+    process.exit(0);
+  }
 
   let isDbInitialized = false;
   try {
@@ -244,7 +274,7 @@ async function main() {
   client.initialize();
 
   // If we only want to run a one-shot command from terminal, we wait for client ready, run it, and exit.
-  if (isOnceSla || isOnceReport || isOnceRekap || isOnceDevReport) {
+  if (isOnceSla || isOnceReport || isOnceRekap || isOnceDevReport || isOncePlato) {
     client.on("ready", async () => {
       if (isOnceSla) {
         console.log("🚀 Running one-shot SLA Check...");
@@ -270,6 +300,10 @@ async function main() {
           false,
         );
       }
+      if (isOncePlato) {
+        console.log("🚀 Running one-shot Plato Top-10 Report...");
+        await runPlatoReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID), true);
+      }
       console.log("\n🏁 Done.");
 
       setTimeout(() => {
@@ -292,6 +326,7 @@ async function main() {
   console.log(`║  SA Excel Send: 0 17 * * 1-5                 ║`);
   console.log(`║  DEV Snapshot : ${DEV_REPORT_SCHEDULE.padEnd(27)} ║`);
   console.log(`║  DEV Excel Snd: 5 17 * * 1-5                 ║`);
+  console.log(`║  Plato Top-10 : ${PLATO_SCHEDULE_ENABLED ? PLATO_SCHEDULE.padEnd(28) : "DISABLED".padEnd(28)} ║`);
   console.log(`║  Develop Rekap: ${REKAP_SCHEDULE_ENABLED ? REKAP_SCHEDULE.padEnd(28) : "DISABLED".padEnd(28)} ║`);
   console.log(`║  SA Group     : ${WA_GROUP_ID?.substring(0, 27).padEnd(27)} ║`);
   console.log(`║  DEV Group    : ${WA_GROUP_ID_DEV?.substring(0, 27).padEnd(27)} ║`);
@@ -418,7 +453,39 @@ async function main() {
     },
   );
 
-  // 6. Status Develop Rekap (Scheduled at 17:00)
+  // 6. Plato Top-10 Weekly Report (default Jumat 16:10)
+  if (PLATO_SCHEDULE_ENABLED) {
+    cron.schedule(
+      PLATO_SCHEDULE,
+      async () => {
+        if (!isClientReady) return;
+        let attempt = 0;
+        const maxAttempts = 3;
+        while (attempt < maxAttempts) {
+          attempt++;
+          try {
+            console.log(
+              `⏰ Menjalankan Scheduled Plato Top-10 (attempt ${attempt}/${maxAttempts})...`,
+            );
+            await runPlatoReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID), false);
+            break;
+          } catch (e) {
+            console.error(`Plato Top-10 Cron Error (attempt ${attempt}):`, e);
+            if (attempt < maxAttempts) {
+              console.log(`⏳ Retrying in 60 seconds...`);
+              await new Promise((r) => setTimeout(r, 60_000));
+            }
+          }
+        }
+      },
+      {
+        timezone: "Asia/Jakarta",
+        recoverMissedExecutions: true,
+      },
+    );
+  }
+
+  // 7. Status Develop Rekap (Scheduled at 17:00)
   if (REKAP_SCHEDULE_ENABLED) {
     cron.schedule(
       REKAP_SCHEDULE,
