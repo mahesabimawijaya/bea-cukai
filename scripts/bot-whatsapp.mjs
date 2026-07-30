@@ -34,6 +34,8 @@ const DEV_REPORT_SCHEDULE = process.env.DEV_REPORT_SCHEDULE || "5 16 * * 1-5";
 // Top-10 Plato: mingguan, Jumat 16:10 (offset agar tidak bentrok snapshot 16:03 & 16:05)
 const PLATO_SCHEDULE = process.env.PLATO_SCHEDULE || "10 16 * * 5";
 const PLATO_SCHEDULE_ENABLED = process.env.PLATO_SCHEDULE_ENABLED === "true";
+const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
+const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 
 if (!WA_GROUP_ID) {
   console.error("Missing WA_GROUP_ID in .env");
@@ -53,6 +55,30 @@ const client = new Client({
 
 let isClientReady = false;
 
+/**
+ * Alert via Telegram saat WA client bermasalah — WA sendiri sedang mati jadi
+ * tidak bisa dipakai buat notifikasi soal dirinya sendiri. Gagal kirim di sini
+ * cuma di-log, jangan sampai bikin proses utama crash.
+ */
+async function sendTelegramAlert(text) {
+  if (!TELE_BOT_TOKEN || !TELE_GROUP_ID) {
+    console.warn("⚠️ TELE_BOT_TOKEN/TELE_GROUP_ID belum di-set, alert Telegram dilewati.");
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELE_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: TELE_GROUP_ID, text }),
+    });
+    if (!res.ok) {
+      console.error("❌ Gagal kirim alert Telegram:", res.status, await res.text());
+    }
+  } catch (e) {
+    console.error("❌ Gagal kirim alert Telegram:", e.message);
+  }
+}
+
 client.on("qr", (qr) => {
   console.log(
     "Mohon scan QR Code ini menggunakan aplikasi WhatsApp di HP Anda:",
@@ -66,6 +92,9 @@ client.on("authenticated", () => {
 
 client.on("auth_failure", (msg) => {
   console.error("❌ Gagal autentikasi:", msg);
+  sendTelegramAlert(
+    `🔴 WA Bot: Gagal autentikasi (auth_failure).\n${msg}\n\nCek RDP, kemungkinan perlu scan ulang QR.`,
+  );
 });
 
 client.on("ready", () => {
@@ -76,6 +105,9 @@ client.on("ready", () => {
 client.on("disconnected", (reason) => {
   console.error("❌ Client disconnected:", reason);
   isClientReady = false;
+  sendTelegramAlert(
+    `🔴 WA Bot: WhatsApp session terputus (${reason}).\n\nSemua cron alert/report berhenti kirim sampai session dipulihkan. Buka RDP dan scan ulang QR (pm2 logs wa-bot).`,
+  );
 });
 
 // ─── Message Listener (Webhook-like) ────────────────────────────────────────
