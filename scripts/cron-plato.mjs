@@ -18,6 +18,11 @@ const PLATO_TOP_N = Number(process.env.PLATO_TOP_N || 10);
 // Pool statistik Plato dipakai untuk melengkapi Total/History per kode SOP
 // yang ditemukan dari Jira. Maks 50 (limit Plato).
 const PLATO_POOL_SIZE = Number(process.env.PLATO_POOL_SIZE || 50);
+// Lebar jendela laporan: 7 hari terakhir termasuk hari ini.
+const PLATO_RANGE_DAYS = Number(process.env.PLATO_RANGE_DAYS || 7);
+// Berapa hari ke belakang tren harian diambil untuk bagian "History Tiket".
+// Sengaja lebih lebar dari jendela laporan supaya konteksnya kelihatan;
+// yang ditampilkan tetap 7 hari yang ada tiketnya (lihat formatHistoryLines).
 const PLATO_TREND_DAYS = Number(process.env.PLATO_TREND_DAYS || 14);
 // Rentang hari ke belakang untuk mencari tiket BUGS26 [BERULANG]. Default 0 =
 // tanpa batas — bug yang statusnya sudah "Done" berbulan lalu tetap relevan
@@ -89,17 +94,21 @@ function toApiDate(date) {
   return `${y}-${m}-${d}`;
 }
 
-/** Senin minggu ini s/d hari ini (WIB, mengikuti jam server). */
-function getCurrentWeekRange() {
+/**
+ * Rentang N hari terakhir termasuk hari ini (default 7).
+ *
+ * Sebelumnya dipakai "Senin minggu ini s/d hari ini", tapi itu bikin lebar
+ * jendela berubah-ubah — kalau report dijalankan Senin, datanya cuma 1 hari.
+ * Rolling 7 hari selalu konsisten berapa pun harinya.
+ */
+function getReportRange(days = PLATO_RANGE_DAYS) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const monday = new Date(today);
-  const dow = monday.getDay(); // 0 = Sunday
-  const diffToMonday = dow === 0 ? -6 : 1 - dow;
-  monday.setDate(monday.getDate() + diffToMonday);
+  const from = new Date(today);
+  from.setDate(from.getDate() - (days - 1));
 
-  return { dateFrom: toApiDate(monday), dateTo: toApiDate(today) };
+  return { dateFrom: toApiDate(from), dateTo: toApiDate(today) };
 }
 
 // ─── Plato fetchers ─────────────────────────────────────────────────────────
@@ -434,29 +443,39 @@ function aggregateTicketsFallback(tickets) {
   return { totalTicket: tickets.length, totalBugs: bugs, totalHuman: human, totalInfra: infra, dailyTrends };
 }
 
-function formatHistory(dailyTrends) {
-  const active = (dailyTrends || []).filter((d) => (d.total || 0) > 0).slice(0, 7);
-  if (!active.length) return "";
-  return active.map((d) => `${d.date} (${d.total})`).join(", ");
+/** Tren harian jadi baris-baris berbullet, hanya hari yang ada tiketnya. */
+function formatHistoryLines(dailyTrends) {
+  return (dailyTrends || [])
+    .filter((d) => (d.total || 0) > 0)
+    .slice(0, 7)
+    .map((d) => `- ${d.date} (${d.total})`);
+}
+
+function toTitleCase(s) {
+  return s.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**
- * cc pakai mention beneran (nomor WA) kalau nama-nya ketemu di SA_WA_NUMBERS
- * (cron-sla-whatsapp.mjs — satu-satunya sumber kebenaran nomor tim SA). Kalau
- * tidak ketemu, cuma tag nama polos ("@Nama") — bukan mention fungsional,
- * cuma penanda visual karena kita belum punya nomornya.
+ * cc HANYA untuk tim SA Altros — nama lain yang muncul di field System Analyst
+ * (tim BC, QC, dsb) sengaja dibuang karena laporan ini ditujukan ke tim SA saja.
+ * SA_WA_NUMBERS di cron-sla-whatsapp.mjs adalah satu-satunya sumber kebenaran
+ * daftar anggota + nomornya, jadi semua yang lolos filter pasti punya nomor dan
+ * ter-mention beneran (bukan tag teks kosong).
+ *
+ * Nama tampilnya diambil dari kunci SA_WA_NUMBERS, bukan dari displayName Jira,
+ * supaya konsisten — displayName "M Farisan Hidayatullah" akan tampil sebagai
+ * "mas M" kalau diambil token pertamanya.
  */
 function formatCc(names) {
-  if (!names.length) return "";
-  const parts = names.map((full) => {
-    const first = full.trim().split(/\s+/)[0];
-    const lower = full.toLowerCase();
-    const hit = Object.entries(SA_WA_NUMBERS).find(
-      ([key]) => lower.includes(key),
-    );
-    return hit ? `mas ${first} @${hit[1]}` : `@${first}`;
-  });
-  return [...new Set(parts)].join(", ");
+  const seen = new Map(); // nomor -> label, sekaligus mencegah duplikat
+  for (const full of names) {
+    const lower = (full || "").toLowerCase();
+    const hit = Object.entries(SA_WA_NUMBERS).find(([key]) => lower.includes(key));
+    if (!hit) continue; // bukan tim SA Altros
+    const [key, phone] = hit;
+    if (!seen.has(phone)) seen.set(phone, `mas ${toTitleCase(key)} @${phone}`);
+  }
+  return [...seen.values()].join(", ");
 }
 
 export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) {
@@ -465,13 +484,19 @@ export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) 
   rows.forEach((row, idx) => {
     const d = details[row.code] || { tickets: [], jira: [], subjectLine: "", permasalahan: "", analisa: "", perbaikan: "" };
 
-    parts.push(`${idx + 1}. ${row.code}\t${row.subject}`);
-    parts.push(
-      `Total: ${row.totalTicket} tiket (Bugs Aplikasi: ${row.totalBugs} | Human Error: ${row.totalHuman} | Infra: ${row.totalInfra})`,
-    );
+    parts.push(`${idx + 1}. ${row.code} ${row.subject}`);
 
-    const history = formatHistory(row.dailyTrends);
-    if (history) parts.push(`History: ${history}`);
+    parts.push(`Summary Issue:`);
+    parts.push(`- Total: ${row.totalTicket}`);
+    parts.push(`- Bugs Aplikasi: ${row.totalBugs}`);
+    parts.push(`- Human Error: ${row.totalHuman}`);
+    parts.push(`- Infra: ${row.totalInfra}`);
+
+    const historyLines = formatHistoryLines(row.dailyTrends);
+    if (historyLines.length) {
+      parts.push(`History Tiket:`);
+      parts.push(...historyLines);
+    }
 
     parts.push(`Permasalahan :`);
     if (d.permasalahan) {
@@ -481,7 +506,7 @@ export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) 
     } else {
       const problems = topDistinct(d.tickets, "problem", 3);
       if (problems.length) {
-        problems.forEach((p) => parts.push(problems.length > 1 ? `* ${p}` : p));
+        problems.forEach((p) => parts.push(problems.length > 1 ? `- ${p}` : p));
       } else {
         parts.push(`(belum ada detail permasalahan)`);
       }
@@ -500,7 +525,7 @@ export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) 
       parts.push(`Tiket Penyelesaian:`);
       d.jira
         .slice(0, 5)
-        .forEach((j) => parts.push(`${j.key} : ${j.status} || ${j.summary}`));
+        .forEach((j) => parts.push(`- ${j.key} : ${j.status} || ${j.summary}`));
     }
 
     const ccNames = [...new Set(d.jira.flatMap((j) => j.sa))];
@@ -526,8 +551,8 @@ export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) 
  * `sendMessage` diberikan.
  */
 export async function runPlatoReport(sendMessage = null, isDebug = false) {
-  const { dateFrom, dateTo } = getCurrentWeekRange();
-  console.log(`📊 Plato Top-10: ${dateFrom} s/d ${dateTo}`);
+  const { dateFrom, dateTo } = getReportRange();
+  console.log(`📊 Plato Top-10: ${dateFrom} s/d ${dateTo} (${PLATO_RANGE_DAYS} hari terakhir)`);
 
   // Sumber daftar KANDIDAT Top-10 adalah Jira BUGS26 [BERULANG] (supaya tidak
   // ikut isu administratif murni seperti reset password) — tapi URUTANnya

@@ -5,6 +5,7 @@ import cron from "node-cron";
 import pkg from "whatsapp-web.js";
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from "qrcode-terminal";
+import QRCode from "qrcode";
 
 // Import our refactored logic
 import {
@@ -79,11 +80,61 @@ async function sendTelegramAlert(text) {
   }
 }
 
-client.on("qr", (qr) => {
-  console.log(
-    "Mohon scan QR Code ini menggunakan aplikasi WhatsApp di HP Anda:",
-  );
+/** Kirim gambar (QR) ke Telegram. Gagal kirim cukup di-log, jangan crash. */
+async function sendTelegramPhoto(buffer, caption) {
+  if (!TELE_BOT_TOKEN || !TELE_GROUP_ID) return;
+  try {
+    const form = new FormData();
+    form.append("chat_id", TELE_GROUP_ID);
+    form.append("caption", caption);
+    form.append("photo", new Blob([buffer], { type: "image/png" }), "wa-qr.png");
+
+    const res = await fetch(`https://api.telegram.org/bot${TELE_BOT_TOKEN}/sendPhoto`, {
+      method: "POST",
+      body: form,
+    });
+    if (!res.ok) {
+      console.error("❌ Gagal kirim QR ke Telegram:", res.status, await res.text());
+    }
+  } catch (e) {
+    console.error("❌ Gagal kirim QR ke Telegram:", e.message);
+  }
+}
+
+// wwebjs memancarkan event "qr" tiap kali kodenya di-refresh (~20 detik sekali),
+// jadi pengirimannya perlu direm supaya Telegram tidak dibanjiri. QR WhatsApp
+// memang cepat kedaluwarsa — makanya tetap dikirim berkala (bukan sekali saja)
+// supaya selalu ada kode yang relatif segar untuk di-scan, tapi dibatasi
+// jumlahnya agar tidak spam tanpa henti kalau tidak ada yang merespons.
+const QR_TELEGRAM_MIN_INTERVAL_MS = 60_000;
+const QR_TELEGRAM_MAX_SENDS = 20;
+let qrLastSentAt = 0;
+let qrSendCount = 0;
+
+client.on("qr", async (qr) => {
+  console.log("Mohon scan QR Code ini menggunakan aplikasi WhatsApp di HP Anda:");
   qrcode.generate(qr, { small: true });
+
+  const now = Date.now();
+  if (now - qrLastSentAt < QR_TELEGRAM_MIN_INTERVAL_MS) return;
+  if (qrSendCount >= QR_TELEGRAM_MAX_SENDS) return;
+
+  qrLastSentAt = now;
+  qrSendCount++;
+
+  try {
+    const png = await QRCode.toBuffer(qr, { width: 512, margin: 2 });
+    const isLast = qrSendCount === QR_TELEGRAM_MAX_SENDS;
+    await sendTelegramPhoto(
+      png,
+      `🔴 WA Bot perlu scan ulang (QR ke-${qrSendCount})\n\n` +
+        `Scan dari HP: WhatsApp → Perangkat Tertaut → Tautkan Perangkat.\n` +
+        `QR cepat kedaluwarsa — kalau gagal, tunggu kiriman berikutnya (±1 menit).` +
+        (isLast ? `\n\n⚠️ Ini kiriman QR terakhir. Kalau terlewat, restart bot (pm2 restart wa-bot) untuk minta QR baru.` : ""),
+    );
+  } catch (e) {
+    console.error("❌ Gagal membuat gambar QR:", e.message);
+  }
 });
 
 client.on("authenticated", () => {
@@ -93,22 +144,129 @@ client.on("authenticated", () => {
 client.on("auth_failure", (msg) => {
   console.error("❌ Gagal autentikasi:", msg);
   sendTelegramAlert(
-    `🔴 WA Bot: Gagal autentikasi (auth_failure).\n${msg}\n\nCek RDP, kemungkinan perlu scan ulang QR.`,
+    `🔴 WA Bot: Gagal autentikasi (auth_failure).\n${msg}\n\nQR akan dikirim ke grup ini — tinggal scan dari HP, tidak perlu buka RDP.`,
   );
 });
 
 client.on("ready", () => {
   console.log("✅ Client is ready!");
+  const wasDown = !isClientReady;
   isClientReady = true;
+  consecutiveHealthFailures = 0;
+  qrSendCount = 0; // reset kuota QR untuk siklus berikutnya
+  if (wasDown) {
+    sendTelegramAlert("✅ WA Bot: session pulih dan siap kirim pesan lagi.");
+  }
 });
 
 client.on("disconnected", (reason) => {
   console.error("❌ Client disconnected:", reason);
   isClientReady = false;
   sendTelegramAlert(
-    `🔴 WA Bot: WhatsApp session terputus (${reason}).\n\nSemua cron alert/report berhenti kirim sampai session dipulihkan. Buka RDP dan scan ulang QR (pm2 logs wa-bot).`,
+    `🔴 WA Bot: WhatsApp session terputus (${reason}).\n\nBot akan mencoba pulih sendiri. Kalau sesinya benar-benar dicabut, QR akan dikirim ke grup ini untuk di-scan dari HP.`,
   );
 });
+
+// ─── Health Check (Watchdog) ────────────────────────────────────────────────
+//
+// Event "disconnected" dari wwebjs TIDAK selalu menyala: kalau tab Puppeteer
+// crash, halaman WA Web diam-diam rusak, atau koneksi jadi black hole, event
+// itu tidak pernah muncul. Akibatnya isClientReady tetap true selamanya, semua
+// cron lolos guard, lalu client.sendMessage() meledak di dalam — persis gejala
+// "Cannot read properties of undefined (reading 'getChat')".
+//
+// Watchdog ini bertanya aktif ke WA. Kalau jawabannya bukan CONNECTED (atau
+// tidak menjawab sama sekali), proses dibunuh supaya PM2 menghidupkan ulang
+// dari nol. Sesi LocalAuth tersimpan di disk, jadi restart biasanya langsung
+// terautentikasi lagi tanpa perlu QR.
+
+const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+// getState() menembus Puppeteer; kalau halamannya hang bisa menggantung
+// selamanya, jadi harus dibatasi. 30 detik dipilih (bukan 15) karena saat RAM
+// server sedang penuh getState() bisa lambat walau sebenarnya sehat.
+const HEALTH_CHECK_TIMEOUT_MS = 30_000;
+// Baru restart setelah gagal 2x berturut-turut (±5 menit apart) supaya
+// gangguan sesaat tidak memicu restart yang justru menambah beban.
+const HEALTH_CHECK_MAX_FAILURES = 2;
+
+let consecutiveHealthFailures = 0;
+
+// process.exit() hanya menyembuhkan kalau ADA yang menghidupkan ulang. PM2
+// menandai prosesnya lewat env pm_id; tanpa itu (mis. dijalankan `node` biasa)
+// keluar dari proses justru mematikan bot permanen — lebih baik tetap hidup
+// dalam kondisi rusak dan berteriak, daripada mati senyap.
+const IS_UNDER_PM2 = process.env.pm_id !== undefined;
+
+async function restartForUnhealthyClient(reason) {
+  consecutiveHealthFailures++;
+
+  if (consecutiveHealthFailures < HEALTH_CHECK_MAX_FAILURES) {
+    console.warn(
+      `⚠️ Health check gagal (${consecutiveHealthFailures}/${HEALTH_CHECK_MAX_FAILURES}): ${reason}. Dicek lagi 5 menit lagi.`,
+    );
+    return;
+  }
+
+  // Setop cron menyentuh client yang sudah rusak.
+  isClientReady = false;
+
+  if (!IS_UNDER_PM2) {
+    console.error(
+      `🔴 Health check gagal ${HEALTH_CHECK_MAX_FAILURES}x: ${reason}. TIDAK restart otomatis karena proses ini tidak dijalankan lewat PM2.`,
+    );
+    await sendTelegramAlert(
+      `🔴 WA Bot: koneksi WhatsApp tidak sehat (${reason}) dan bot TIDAK berjalan di bawah PM2, jadi tidak bisa restart sendiri.\n\nJalankan ulang manual: pm2 restart wa-bot`,
+    );
+    consecutiveHealthFailures = 0; // hindari alert beruntun tiap 5 menit
+    return;
+  }
+
+  console.error(
+    `🔴 Health check gagal ${HEALTH_CHECK_MAX_FAILURES}x berturut-turut: ${reason}. Restart proses...`,
+  );
+  await sendTelegramAlert(
+    `🔄 WA Bot: koneksi WhatsApp tidak sehat (${reason}).\n\nProses di-restart otomatis oleh PM2 — biasanya pulih sendiri tanpa perlu scan QR.`,
+  );
+  // Beri jeda agar request Telegram benar-benar terkirim sebelum proses mati.
+  await new Promise((r) => setTimeout(r, 2000));
+  process.exit(1);
+}
+
+function startHealthCheck() {
+  setInterval(async () => {
+    // Belum ready = sedang boot atau menunggu QR. Bukan urusan watchdog:
+    // membunuh proses di sini justru menghapus QR yang sedang ditampilkan.
+    if (!isClientReady) return;
+
+    try {
+      const state = await Promise.race([
+        client.getState(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`getState timeout ${HEALTH_CHECK_TIMEOUT_MS / 1000}s`)),
+            HEALTH_CHECK_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+
+      if (state === "CONNECTED") {
+        if (consecutiveHealthFailures > 0) {
+          console.log(`💚 Health check pulih setelah ${consecutiveHealthFailures}x gagal.`);
+          consecutiveHealthFailures = 0;
+        }
+        return;
+      }
+
+      await restartForUnhealthyClient(`state = ${state}`);
+    } catch (e) {
+      await restartForUnhealthyClient(e.message);
+    }
+  }, HEALTH_CHECK_INTERVAL_MS);
+
+  console.log(
+    `💓 Health check aktif: tiap ${HEALTH_CHECK_INTERVAL_MS / 60000} menit, timeout ${HEALTH_CHECK_TIMEOUT_MS / 1000}s, restart setelah ${HEALTH_CHECK_MAX_FAILURES}x gagal.`,
+  );
+}
 
 // ─── Message Listener (Webhook-like) ────────────────────────────────────────
 
@@ -364,6 +522,10 @@ async function main() {
   console.log(`║  DEV Group    : ${WA_GROUP_ID_DEV?.substring(0, 27).padEnd(27)} ║`);
   console.log("╚══════════════════════════════════════════════╝");
   console.log("\nBot will start scheduling after WhatsApp is ready...\n");
+
+  // Hanya di mode daemon — perintah sekali-jalan tidak perlu (dan tidak boleh)
+  // dijaga watchdog karena prosesnya memang sengaja langsung keluar.
+  startHealthCheck();
 
   // 1. SLA Checks (Every 1 Minute)
   cron.schedule(

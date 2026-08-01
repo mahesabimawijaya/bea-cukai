@@ -6,7 +6,7 @@ import ExcelJS from "exceljs";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import { dbClient } from "./cron-sla-whatsapp.mjs";
-import { getStatusEmoji, getStatusRank } from "./cron-whatsapp.mjs";
+import { getStatusEmoji, getStatusRank, withRetry } from "./cron-whatsapp.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
@@ -160,7 +160,18 @@ export function formatExcelRowsDev(grouped, dateStr) {
 
 // ─── Google Sheets (Append-only) ─────────────────────────────────────────────
 
+/**
+ * Wrapper ber-retry. Sengaja dibungkus di sini (bukan di call site) supaya
+ * semua pemanggil — cron harian maupun seed-excel-dev.mjs — dapat proteksi
+ * yang sama tanpa perlu tahu soal retry.
+ */
 export async function writeToGoogleSheetsDev(currentRows, date) {
+  return withRetry(() => writeToGoogleSheetsDevOnce(currentRows, date), {
+    label: `Sinkronisasi Google Sheets '${DEV_SHEET_NAME}' (${date})`,
+  });
+}
+
+async function writeToGoogleSheetsDevOnce(currentRows, date) {
   if (!fs.existsSync(CREDENTIALS_PATH)) {
     console.warn(`⚠️ [DEV] Google Credentials not found. Skipping Sheets sync.`);
     return;
@@ -394,10 +405,16 @@ export async function saveDailyExcelSnapshotDev() {
     );
     console.log(`✅ [DEV] Saved ${rows.length} rows to DB for date: ${date}`);
 
+    // Snapshot DB di atas sudah aman tersimpan, jadi kegagalan Sheets (setelah
+    // semua retry) tidak menggagalkan job ini. Data hari ini bisa disusulkan
+    // lewat re-run karena penulisannya idempoten.
     try {
       await writeToGoogleSheetsDev(rows, date);
     } catch (gErr) {
-      console.error(`❌ [DEV] Failed to sync to Google Sheets:`, gErr);
+      console.error(
+        `❌ [DEV] Sinkronisasi Google Sheets gagal total untuk ${date} — data sudah aman di DB, jalankan ulang untuk menyusul.`,
+        gErr.message,
+      );
     }
   } catch (err) {
     console.error(`❌ [DEV] Error in saveDailyExcelSnapshotDev:`, err);

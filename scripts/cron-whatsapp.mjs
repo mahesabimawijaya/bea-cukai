@@ -56,6 +56,83 @@ if (missing.length > 0) {
 
 // Fonnte does not require initialization like Puppeteer.
 
+// ─── Retry Utility ──────────────────────────────────────────────────────────
+
+/**
+ * Error yang layak di-retry: gangguan jaringan/soket sesaat, rate limit (429),
+ * atau error sisi server (5xx) — semuanya bisa pulih sendiri.
+ *
+ * Error permanen seperti 401/403 (kredensial salah) atau 404 (sheet tidak ada)
+ * sengaja TIDAK di-retry: mengulanginya cuma menunda kegagalan tanpa peluang
+ * berhasil, sekaligus menahan proses lebih lama saat server sedang tertekan.
+ */
+function isRetryableError(err) {
+  const code = err?.code || err?.cause?.code;
+  if (
+    [
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "ECONNREFUSED",
+      "EPIPE",
+      "EAI_AGAIN",
+      "ENOTFOUND",
+      "ERR_STREAM_PREMATURE_CLOSE",
+    ].includes(code)
+  ) {
+    return true;
+  }
+
+  const status = err?.response?.status ?? err?.status;
+  if (status === 429 || (status >= 500 && status < 600)) return true;
+
+  const msg = (err?.message || "").toLowerCase();
+  return (
+    msg.includes("socket hang up") ||
+    msg.includes("timeout") ||
+    msg.includes("network") ||
+    msg.includes("econnreset")
+  );
+}
+
+/**
+ * Jalankan `fn` dengan retry + exponential backoff berjitter.
+ *
+ * Aman untuk sinkronisasi Google Sheets karena writeToGoogleSheets* selalu
+ * memindai ulang sheet dan menghapus baris tanggal hari ini sebelum menulis —
+ * percobaan yang gagal di tengah jalan tidak meninggalkan baris ganda.
+ *
+ * Backoff-nya sengaja panjang (5s → 10s → 20s): kegagalan di sini biasanya
+ * karena server lagi kehabisan memori/IO, jadi retry cepat malah menambah
+ * beban di saat yang salah.
+ */
+export async function withRetry(
+  fn,
+  { label = "Operasi", maxAttempts = 4, baseDelayMs = 5000 } = {},
+) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      if (!isRetryableError(err)) {
+        console.error(`❌ ${label}: error permanen, tidak di-retry — ${err.message}`);
+        throw err;
+      }
+      if (attempt === maxAttempts) {
+        console.error(
+          `❌ ${label}: masih gagal setelah ${maxAttempts} percobaan — ${err.message}`,
+        );
+        throw err;
+      }
+
+      const delay = baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 1000);
+      console.warn(
+        `⚠️ ${label}: gagal (percobaan ${attempt}/${maxAttempts}) — ${err.message}. Ulangi dalam ${Math.round(delay / 1000)}s...`,
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 // ─── Status Categorization ──────────────────────────────────────────────────
 
 const WHATS_NEXT_STATUSES = new Set([
@@ -493,18 +570,34 @@ export async function saveDailyExcelSnapshot() {
     );
     console.log(`✅ Saved ${rows.length} rows to DB for date: ${date}`);
 
-    // Google Sheets Integration
+    // Google Sheets Integration — snapshot DB di atas sudah aman tersimpan,
+    // jadi kegagalan Sheets (setelah semua retry) tidak menggagalkan job ini.
+    // Data hari ini bisa disusulkan lewat re-run karena penulisannya idempoten.
     try {
       await writeToGoogleSheets(rows, date);
     } catch (gErr) {
-      console.error(`❌ Failed to sync to Google Sheets:`, gErr);
+      console.error(
+        `❌ Sinkronisasi Google Sheets (SA) gagal total untuk ${date} — data sudah aman di DB, jalankan ulang untuk menyusul.`,
+        gErr.message,
+      );
     }
   } catch (err) {
     console.error(`❌ Error in saveDailyExcelSnapshot:`, err);
   }
 }
 
+/**
+ * Wrapper ber-retry. Sengaja dibungkus di sini (bukan di call site) supaya
+ * semua pemanggil — cron harian maupun seed-excel.mjs — dapat proteksi yang
+ * sama tanpa perlu tahu soal retry.
+ */
 async function writeToGoogleSheets(currentRows, date) {
+  return withRetry(() => writeToGoogleSheetsOnce(currentRows, date), {
+    label: `Sinkronisasi Google Sheets 'Logbook SA' (${date})`,
+  });
+}
+
+async function writeToGoogleSheetsOnce(currentRows, date) {
   const SPREADSHEET_ID = "114oWjMGLGW52RmLoosNwZycDwgMaFxscO956oAKUMrY";
   const CREDENTIALS_PATH = resolve(rootDir, "chrome-enterprise-479812-25430543c27e.json");
 
