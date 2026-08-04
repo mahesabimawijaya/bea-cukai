@@ -179,6 +179,28 @@ function calculateTimeSpentInStatus(issue, statusName) {
   return timeSpentMs / (1000 * 60 * 60); // convert to hours
 }
 
+/**
+ * Apakah tiket PERNAH tercatat berstatus `statusName` di changelog-nya (kapan
+ * saja, tidak harus baru-baru ini).
+ *
+ * Pakai `.includes()`, BUKAN exact match — nama status asli di Jira ternyata
+ * literally mengandung emoji ("🔴 Pending", bukan "Pending" polos), terverifikasi
+ * dari changelog BUGS26-1868. Exact match akan selalu gagal cocok dan bikin
+ * fix ini jadi no-op diam-diam. Konsisten dengan pola `.includes("pending")`
+ * yang sudah dipakai di cron-whatsapp.mjs/cron-telegram.mjs untuk status ini.
+ */
+function hasEverBeenInStatus(issue, statusName) {
+  const target = statusName.toLowerCase();
+  for (const history of issue.changelog?.histories || []) {
+    for (const item of history.items) {
+      if (item.field !== "status") continue;
+      if ((item.toString || "").toLowerCase().includes(target)) return true;
+      if ((item.fromString || "").toLowerCase().includes(target)) return true;
+    }
+  }
+  return false;
+}
+
 function categorizeTask(statusName) {
   if (!statusName) return "todo";
   const s = statusName.toLowerCase();
@@ -311,8 +333,23 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
 
     if (statusCat === "todo") {
       // 2. SLA To Do -> In Progress (60 mins)
+      //
+      // Kesepakatan dengan tim SA (Agustus 2026): SLA breach "To Do" cuma
+      // dihitung pada kunjungan PERTAMA tiket ke status itu. Kalau tiket
+      // sempat di-Pending lalu siklusnya balik lagi lewat Task To Do -> To Do
+      // (lihat flow: PENDING -> TASK TO DO -> TO DO -> IN PROGRESS),
+      // kunjungan kedua & seterusnya TIDAK dihitung — walau berapa lama pun
+      // dia diam di situ.
+      //
+      // hoursSinceCreated di sini bukan "lama di To Do saat ini", tapi "lama
+      // sejak tiket dibuat" — jadi begitu tiket sudah pernah Pending, angka
+      // itu nyaris pasti >1 jam dan salah memicu alert padahal tiketnya baru
+      // saja masuk To Do lagi. Contoh nyata: BUGS26-1868.
+      const alreadyWentThroughPending = hasEverBeenInStatus(issue, "pending");
+
       if (
         isFullSla &&
+        !alreadyWentThroughPending &&
         hoursSinceCreated >= 1 &&
         !(await hasAlertBeenSent(key, "SLA_TODO"))
       ) {
