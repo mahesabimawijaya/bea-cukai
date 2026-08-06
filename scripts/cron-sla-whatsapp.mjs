@@ -315,13 +315,23 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
 
     const assignee = saNames.join(", ");
 
-    // 1. New Todo (within last 24h to avoid old spam, but alert once)
+    // 1. New Todo
     const created = new Date(issue.fields.created);
     const hoursSinceCreated =
       (now.getTime() - created.getTime()) / (1000 * 60 * 60);
 
+    // SEBELUMNYA dibatasi `hoursSinceCreated < 24` untuk "avoid old spam", tapi
+    // field System Analyst (customfield_10613) sering diisi BELAKANGAN setelah
+    // tiket dibuat (dan tidak ter-track di changelog Jira) — begitu SA baru
+    // ketahuan setelah lewat 24 jam, alert jadi tertutup PERMANEN padahal
+    // tiketnya baru saja "terlihat" jadi tanggung jawab SA. Contoh nyata:
+    // BUGS26-2154/2155/2156 (Agustus 2026) — assignee kosong saat dibuat,
+    // cf_10613 baru terisi belakangan, alert tidak pernah terkirim sama sekali.
+    // `hasAlertBeenSent` tetap satu-satunya penjaga dedup; batas 30 hari di
+    // sini murni jaga-jaga kalau tabel jira_sla_alerts pernah ter-reset,
+    // bukan logic utama.
     if (
-      hoursSinceCreated < 24 &&
+      hoursSinceCreated < 24 * 30 &&
       !(await hasAlertBeenSent(key, "NEW_TODO"))
     ) {
       await sendAlertMessage(
