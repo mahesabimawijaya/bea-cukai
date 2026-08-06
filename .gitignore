@@ -48,4 +48,7 @@ next-env.d.ts
 # whatsapp-web.js
 .wwebjs_auth/
 .wwebjs_cache/
-chrome-enterprise-*.json  
+chrome-enterprise-*.json
+
+# preview lokal render gambar Plato (--plato-dry-run)
+scripts/_plato-preview/

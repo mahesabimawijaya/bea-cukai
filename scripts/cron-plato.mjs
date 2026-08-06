@@ -4,6 +4,7 @@ import https from "https";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { SA_WA_NUMBERS } from "./cron-sla-whatsapp.mjs";
+import { renderStatTableImage, renderHistoryTableImage } from "./plato-image.mjs";
 
 const PROJECT_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -612,6 +613,7 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     rows.push({
       code: group.code,
       subject,
+      category: platoRow?.category || "",
       totalTicket: stats.totalTicket,
       totalBugs: stats.totalBugs,
       totalHuman: stats.totalHuman,
@@ -636,7 +638,50 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     console.log("\n─────────────────────────\n");
   }
 
+  // Render 2 gambar tabel meniru gaya screenshot manual (statistik + history
+  // per SOP). Kegagalan render TIDAK menggagalkan laporan — teks tetap jalan.
+  console.log("🖼️  Merender gambar tabel...");
+  const [statImage, historyImage] = await Promise.all([
+    renderStatTableImage(rows),
+    renderHistoryTableImage(rows),
+  ]);
+  console.log(
+    `${statImage ? "✅" : "⚠️ "} Tabel statistik${statImage ? " berhasil" : " gagal"} dirender. ${historyImage ? "✅" : "⚠️ "} Tabel history${historyImage ? " berhasil" : " gagal"} dirender.`,
+  );
+
+  // Dry-run: simpan PNG ke disk lokal supaya bisa dicek visual sebelum ada
+  // yang benar-benar terkirim ke grup produksi.
+  if (isDebug) {
+    const outDir = path.join(PROJECT_ROOT, "scripts", "_plato-preview");
+    fs.mkdirSync(outDir, { recursive: true });
+    if (statImage) {
+      const p = path.join(outDir, "stat-table.png");
+      fs.writeFileSync(p, statImage);
+      console.log(`🖼️  Tabel statistik disimpan: ${p}`);
+    }
+    if (historyImage) {
+      const p = path.join(outDir, "history-table.png");
+      fs.writeFileSync(p, historyImage);
+      console.log(`🖼️  Tabel history disimpan: ${p}`);
+    }
+  }
+
   if (sendMessage) {
+    // Urutan meniru kebiasaan manual: screenshot dulu, teks lengkap nyusul.
+    if (statImage) {
+      await sendMessage("📊 Ticket Solution Statistic", {
+        mimetype: "image/png",
+        data: statImage.toString("base64"),
+        filename: `plato-stat-${dateTo}.png`,
+      });
+    }
+    if (historyImage) {
+      await sendMessage("📅 History Top 10 by SOP and Date", {
+        mimetype: "image/png",
+        data: historyImage.toString("base64"),
+        filename: `plato-history-${dateTo}.png`,
+      });
+    }
     await sendMessage(text);
     console.log("✅ Report Plato terkirim ke WA.");
   }

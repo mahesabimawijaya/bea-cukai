@@ -330,7 +330,19 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
     // `hasAlertBeenSent` tetap satu-satunya penjaga dedup; batas 30 hari di
     // sini murni jaga-jaga kalau tabel jira_sla_alerts pernah ter-reset,
     // bukan logic utama.
+    //
+    // PENTING: blok ini dari dulu TIDAK pernah mengecek statusCat, cuma isSA +
+    // umur + belum-pernah-alert. Ketutup kebetulan oleh gerbang 24 jam yang
+    // lama (tiket yang sudah maju ke QC/Invalid biasanya juga sudah lewat 24
+    // jam sejak dibuat), makanya baru ketahuan sekarang: begitu gerbang umur
+    // dilonggarkan, tiket yang statusnya SUDAH BUKAN To Do lagi (mis. QC BC -
+    // Testing Staging, atau malah sudah Invalid) ikut dapat "New Task
+    // Assigned" — nyata terjadi 6 Agustus 2026, 64 tiket ter-alert sekaligus
+    // termasuk BUGS26-1805 (status QC BC - Testing Staging) dan BUGS26-1806/
+    // 1832 (status Invalid). Makanya wajib syaratkan statusnya MASIH To Do/
+    // Task To Do/Open saat ini, bukan cuma soal umur tiket.
     if (
+      (statusCat === "todo" || statusCat === "tasktodo") &&
       hoursSinceCreated < 24 * 30 &&
       !(await hasAlertBeenSent(key, "NEW_TODO"))
     ) {

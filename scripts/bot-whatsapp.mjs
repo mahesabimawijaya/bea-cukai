@@ -344,7 +344,7 @@ client.on("message", async (msg) => {
       );
       try {
         await runPlatoReport(
-          (t) => sendWhatsAppMessage(t, WA_GROUP_ID),
+          (t, media) => sendWhatsAppMessage(t, WA_GROUP_ID, media),
           false,
         );
       } catch (e) {
@@ -492,7 +492,7 @@ async function main() {
       }
       if (isOncePlato) {
         console.log("🚀 Running one-shot Plato Top-10 Report...");
-        await runPlatoReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID), true);
+        await runPlatoReport((text, media) => sendWhatsAppMessage(text, WA_GROUP_ID, media), true);
       }
       console.log("\n🏁 Done.");
 
@@ -661,7 +661,7 @@ async function main() {
             console.log(
               `⏰ Menjalankan Scheduled Plato Top-10 (attempt ${attempt}/${maxAttempts})...`,
             );
-            await runPlatoReport((text) => sendWhatsAppMessage(text, WA_GROUP_ID), false);
+            await runPlatoReport((text, media) => sendWhatsAppMessage(text, WA_GROUP_ID, media), false);
             break;
           } catch (e) {
             console.error(`Plato Top-10 Cron Error (attempt ${attempt}):`, e);
