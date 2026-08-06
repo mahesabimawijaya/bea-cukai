@@ -119,7 +119,10 @@ export async function fetchTop10({ dateFrom, dateTo, pageSize = PLATO_TOP_N }) {
     date_from: dateFrom,
     date_to: dateTo,
     statistic_mode: "by_start_time",
-    order_by: "total_ticket",
+    // "Bugs Aplikasi Tertinggi" — kriteria yang sama dipakai laporan manual
+    // (dikonfirmasi dari dropdown FE Plato asli + tie-break total_ticket
+    // yang cocok 3/3 kasus dasi terhadap laporan manual).
+    order_by: "total_bugs_application",
     order_dir: "desc",
     page: 1,
     page_size: Math.min(pageSize, 50),
@@ -179,29 +182,44 @@ function jiraAuthHeader() {
 const SOP_CODE_RE = /\b(AL|OT|ED)[\s-]?\d{1,4}\b/i;
 
 /**
- * Ekstrak kode SOP + baris judul dari deskripsi tiket BUGS26.
+ * Ekstrak SEMUA kode SOP + baris judul dari deskripsi tiket BUGS26 — SATU
+ * tiket bisa menyebut BEBERAPA kode SOP sekaligus (root cause yang sama
+ * berdampak ke beberapa kategori Plato), contoh nyata BUGS26-1289/1381:
+ *   [AL6] CEISA 4.0 PEB Status Stuck LNSW Penerimaan Dokumen ...
+ *   [AL10] CEISA 4.0 PIB Status Stuck LNSW Penerimaan Dokumen
+ *   [OT118] CEISA 4.0 TPB ... terhenti pada status LNSW ...
+ * Kalau cuma diambil baris PERTAMA yang cocok (AL6), AL10/OT118 tidak akan
+ * pernah ketemu Permasalahan/Analisa/Perbaikan-nya walau tiketnya sama persis.
+ *
  * Template tiap dev bisa beda urutan field-nya (ada yang menyelipkan baris
  * "Kategori Masalah Tiket" dsb sebelum baris kode) — jadi jangan ambil "baris
- * setelah heading" secara posisional, cari baris yang BENAR-BENAR memuat kode
- * SOP-nya. Fallback ke summary kalau tidak ada satu pun baris deskripsi cocok.
+ * setelah heading" secara posisional, cari SEMUA baris yang BENAR-BENAR
+ * memuat kode SOP. Fallback ke summary kalau tidak ada satu pun baris
+ * deskripsi cocok.
  */
-function extractSopInfo(issue) {
+function extractSopInfoList(issue) {
   const desc = issue.fields.description || "";
   const summary = issue.fields.summary || "";
 
-  const lines = desc.split(/\r?\n/);
-  let rawLine = lines.find((line) => SOP_CODE_RE.test(line)) || "";
+  const matchingLines = desc.split(/\r?\n/).filter((line) => SOP_CODE_RE.test(line));
 
-  let codeMatch = SOP_CODE_RE.exec(rawLine);
-  if (!codeMatch) {
-    codeMatch = SOP_CODE_RE.exec(summary);
-    rawLine = codeMatch ? summary : "";
+  if (!matchingLines.length) {
+    const codeMatch = SOP_CODE_RE.exec(summary);
+    if (!codeMatch) return [];
+    const code = codeMatch[0].toUpperCase().replace(/[\s-]/g, "");
+    return [{ code, subjectLine: cleanAfterMatch(summary, codeMatch[0]) }];
   }
-  if (!codeMatch) return { code: null, subjectLine: "" };
 
-  const matchedText = codeMatch[0];
-  const code = matchedText.toUpperCase().replace(/[\s-]/g, "");
-  return { code, subjectLine: cleanAfterMatch(rawLine, matchedText) };
+  // Dedupe: satu kode bisa disebut lebih dari sekali (mis. di baris "Nama
+  // Permasalahan" DAN di daftar kode terdampak) — pertahankan match pertama.
+  const byCode = new Map();
+  for (const line of matchingLines) {
+    const codeMatch = SOP_CODE_RE.exec(line);
+    if (!codeMatch) continue;
+    const code = codeMatch[0].toUpperCase().replace(/[\s-]/g, "");
+    if (!byCode.has(code)) byCode.set(code, cleanAfterMatch(line, codeMatch[0]));
+  }
+  return [...byCode.entries()].map(([code, subjectLine]) => ({ code, subjectLine }));
 }
 
 /**
@@ -340,7 +358,10 @@ async function fetchRecurringBugs({ lookbackDays = PLATO_JIRA_LOOKBACK_DAYS } = 
 
 /**
  * Kelompokkan tiket [BERULANG] berdasarkan kode SOP yang diekstrak dari
- * deskripsinya. Satu kode bisa punya beberapa tiket (mis. AL259 punya 5) —
+ * deskripsinya. Satu tiket bisa menyumbang ke BEBERAPA kode SOP sekaligus
+ * (lihat extractSopInfoList) — Permasalahan/Analisa/Perbaikan-nya (section
+ * level TIKET, bukan per-kode) ikut disalin ke semua kode yang disebut tiket
+ * itu. Satu kode juga bisa punya beberapa tiket (mis. AL259 punya 5) —
  * Permasalahan/Analisa/Perbaikan diambil dari tiket PERTAMA (paling baru
  * di-update, karena fetchRecurringBugs sudah ORDER BY updated DESC) yang
  * berhasil menemukan section "Permasalahan" lengkap, supaya konsisten satu
@@ -351,38 +372,41 @@ function groupBugsBySopCode(issues) {
 
   for (const issue of issues) {
     const desc = issue.fields.description || "";
-    const { code, subjectLine } = extractSopInfo(issue);
-    if (!code) continue; // tidak bisa dipetakan ke kode SOP, skip
+    const sopInfoList = extractSopInfoList(issue);
+    if (!sopInfoList.length) continue; // tidak bisa dipetakan ke kode SOP apapun, skip
 
-    if (!groups.has(code)) {
-      groups.set(code, {
-        code,
-        subjectLine: "",
-        permasalahan: "",
-        analisa: "",
-        perbaikan: "",
-        issues: [],
-      });
-    }
-    const g = groups.get(code);
-    if (!g.subjectLine && subjectLine) g.subjectLine = subjectLine;
+    // Section level TIKET (bukan per-kode) — hitung sekali, dipakai bareng
+    // oleh semua kode yang disebut tiket ini.
+    const sections = extractStructuredSections(desc);
 
-    if (!g.permasalahan) {
-      const sections = extractStructuredSections(desc);
-      if (sections.permasalahan) {
+    for (const { code, subjectLine } of sopInfoList) {
+      if (!groups.has(code)) {
+        groups.set(code, {
+          code,
+          subjectLine: "",
+          permasalahan: "",
+          analisa: "",
+          perbaikan: "",
+          issues: [],
+        });
+      }
+      const g = groups.get(code);
+      if (!g.subjectLine && subjectLine) g.subjectLine = subjectLine;
+
+      if (!g.permasalahan && sections.permasalahan) {
         g.permasalahan = sections.permasalahan;
         g.analisa = sections.analisa;
         g.perbaikan = sections.perbaikan;
       }
-    }
 
-    g.issues.push({
-      key: issue.key,
-      status: issue.fields.status?.name || "",
-      summary: (issue.fields.summary || "").replace(/\s*\r?\n\s*/g, " ").trim(),
-      sa: (issue.fields.customfield_10613 || []).map((u) => u.displayName || u.name),
-      updated: issue.fields.updated,
-    });
+      g.issues.push({
+        key: issue.key,
+        status: issue.fields.status?.name || "",
+        summary: (issue.fields.summary || "").replace(/\s*\r?\n\s*/g, " ").trim(),
+        sa: (issue.fields.customfield_10613 || []).map((u) => u.displayName || u.name),
+        updated: issue.fields.updated,
+      });
+    }
   }
 
   return groups;
@@ -555,10 +579,26 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
   const { dateFrom, dateTo } = getReportRange();
   console.log(`📊 Plato Top-10: ${dateFrom} s/d ${dateTo} (${PLATO_RANGE_DAYS} hari terakhir)`);
 
-  // Sumber daftar KANDIDAT Top-10 adalah Jira BUGS26 [BERULANG] (supaya tidak
-  // ikut isu administratif murni seperti reset password) — tapi URUTANnya
-  // tetap by volume tiket Plato minggu ini, karena judul reportnya "Top-10
-  // minggu ini". Kode SOP diekstrak dari deskripsi tiket Jira.
+  // Sumber SELEKSI Top-10 adalah Plato sendiri, sort by Bugs Aplikasi
+  // tertinggi — persis kriteria yang dipakai laporan manual (dikonfirmasi
+  // dari dropdown "Bugs Aplikasi Tertinggi" di screenshot native FE Plato,
+  // dan tie-break-nya total_ticket, keduanya cocok 3/3 kasus dasi terhadap
+  // laporan manual asli). BUKAN lagi Jira [BERULANG] sebagai gate kandidat —
+  // itu cuma jadi sumber ENRICHMENT (Permasalahan/Analisa/Perbaikan) di bawah.
+  const { rows: platoTop10, summary } = await fetchTop10({
+    dateFrom,
+    dateTo,
+    pageSize: PLATO_TOP_N,
+  });
+  console.log(`📊 ${platoTop10.length} SOP terpilih dari Plato (sort: Bugs Aplikasi tertinggi).`);
+
+  if (!platoTop10.length) {
+    console.log("⚠️ Plato tidak mengembalikan data Top-10. Report dibatalkan.");
+    return null;
+  }
+
+  // Jira [BERULANG] tetap dipindai penuh (tanpa batas), tapi sekarang cuma
+  // dipakai sebagai LOOKUP per kode terpilih — bukan sumber daftar kandidat.
   console.log(`🔎 Mencari tiket BUGS26 [BERULANG] (${PLATO_JIRA_LOOKBACK_DAYS} hari terakhir)...`);
   const recurringIssues = await fetchRecurringBugs();
   const groups = groupBugsBySopCode(recurringIssues);
@@ -566,68 +606,46 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     `✅ ${recurringIssues.length} tiket [BERULANG], ${groups.size} kode SOP berhasil diekstrak.`,
   );
 
-  if (!groups.size) {
-    console.log("⚠️ Tidak ada kode SOP yang bisa diekstrak dari Jira. Report dibatalkan.");
-    return null;
-  }
-
-  // Pool statistik Plato dipakai untuk isi Total/History tanpa perlu 1 call
-  // per kode — kalau kode tidak ada di pool (volume rendah), fallback ke
-  // /tickets/by-sop dan hitung manual.
-  const { rows: platoPool, summary } = await fetchTop10({
-    dateFrom,
-    dateTo,
-    pageSize: PLATO_POOL_SIZE,
-  });
-  const platoByCode = new Map(platoPool.map((r) => [r.code, r]));
-
-  // Ambil stats utk SEMUA kandidat dulu (baru bisa sort by volume setelahnya).
-  const candidates = [];
-  for (const group of groups.values()) {
-    const platoRow = platoByCode.get(group.code);
-    let tickets = [];
-    try {
-      tickets = await fetchTicketsBySop(group.code, { dateFrom, dateTo });
-    } catch (e) {
-      console.warn(`⚠️ Detail tiket ${group.code} gagal: ${e.message}`);
-    }
-
-    const stats = platoRow || aggregateTicketsFallback(tickets);
-    const latestUpdate = Math.max(...group.issues.map((i) => new Date(i.updated).getTime()));
-    candidates.push({ group, platoRow, tickets, stats, latestUpdate });
-
-    console.log(
-      `   • ${group.code}: ${group.issues.length} tiket Jira, ${stats.totalTicket} tiket Plato${platoRow ? "" : " (fallback, di luar pool)"}`,
-    );
-  }
-
-  // Urutkan by volume minggu ini (desc), tie-break by yang paling baru di-update.
-  candidates.sort((a, b) => b.stats.totalTicket - a.stats.totalTicket || b.latestUpdate - a.latestUpdate);
-  const selected = candidates.slice(0, PLATO_TOP_N);
-
   const rows = [];
   const details = {};
-  for (const { group, platoRow, tickets, stats } of selected) {
-    const subject = platoRow?.subject || group.subjectLine || group.issues[0]?.summary || "";
+  for (const platoRow of platoTop10) {
+    const group = groups.get(platoRow.code);
+
+    let tickets = [];
+    try {
+      tickets = await fetchTicketsBySop(platoRow.code, { dateFrom, dateTo });
+    } catch (e) {
+      console.warn(`⚠️ Detail tiket ${platoRow.code} gagal: ${e.message}`);
+    }
+
+    const subject = platoRow.subject || group?.subjectLine || group?.issues[0]?.summary || "";
 
     rows.push({
-      code: group.code,
+      code: platoRow.code,
       subject,
-      category: platoRow?.category || "",
-      totalTicket: stats.totalTicket,
-      totalBugs: stats.totalBugs,
-      totalHuman: stats.totalHuman,
-      totalInfra: stats.totalInfra,
-      dailyTrends: stats.dailyTrends,
+      category: platoRow.category || "",
+      totalTicket: platoRow.totalTicket,
+      totalBugs: platoRow.totalBugs,
+      totalHuman: platoRow.totalHuman,
+      totalInfra: platoRow.totalInfra,
+      dailyTrends: platoRow.dailyTrends,
     });
-    details[group.code] = {
+    // group bisa undefined kalau kode ini tidak punya tiket [BERULANG] yang
+    // match (nyata terjadi di laporan manual juga, mis. "AL200: Sedang
+    // dianalisa lebih lanjut") — formatPlatoReport sudah otomatis jatuh ke
+    // placeholder [ISI MANUAL...] kalau permasalahan/analisa/perbaikan kosong.
+    details[platoRow.code] = {
       tickets,
-      jira: group.issues,
-      subjectLine: group.subjectLine,
-      permasalahan: group.permasalahan,
-      analisa: group.analisa,
-      perbaikan: group.perbaikan,
+      jira: group?.issues || [],
+      subjectLine: group?.subjectLine || "",
+      permasalahan: group?.permasalahan || "",
+      analisa: group?.analisa || "",
+      perbaikan: group?.perbaikan || "",
     };
+
+    console.log(
+      `   • ${platoRow.code}: bugs=${platoRow.totalBugs} total=${platoRow.totalTicket}, ${group ? `${group.issues.length} tiket [BERULANG] ditemukan` : "tidak ada tiket [BERULANG] — pakai placeholder"}`,
+    );
   }
 
   const text = formatPlatoReport({ rows, summary, details, dateFrom, dateTo });
