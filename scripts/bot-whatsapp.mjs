@@ -337,14 +337,17 @@ client.on("message", async (msg) => {
       return;
     }
 
-    // 0. Plato Top-10 Trigger (Internal SA Group) — keyword hint "top 10" / "top-10"
-    if (msg.from === WA_GROUP_ID && (text.includes("top 10") || text.includes("top-10"))) {
+    // 0. Plato Top-10 Trigger (SA Group + Report Group) — keyword hint "top 10" / "top-10"
+    if (
+      (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_REPORT) &&
+      (text.includes("top 10") || text.includes("top-10"))
+    ) {
       console.log(
         `💬 Received manual PLATO Top-10 request from ${msg.author || msg.from}`,
       );
       try {
         await runPlatoReport(
-          (t, media) => sendWhatsAppMessage(t, WA_GROUP_ID, media),
+          (t, media) => sendWhatsAppMessage(t, msg.from, media),
           false,
         );
       } catch (e) {

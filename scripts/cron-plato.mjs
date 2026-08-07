@@ -4,9 +4,15 @@ import https from "https";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { SA_WA_NUMBERS } from "./cron-sla-whatsapp.mjs";
-import { renderStatTableImage, renderHistoryTableImage } from "./plato-image.mjs";
+import {
+  renderStatTableImage,
+  renderHistoryTableImage,
+} from "./plato-image.mjs";
 
-const PROJECT_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PROJECT_ROOT = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -30,7 +36,9 @@ const PLATO_TREND_DAYS = Number(process.env.PLATO_TREND_DAYS || 14);
 // selama masih menyebabkan tiket baru di Plato minggu ini (recency Jira bukan
 // indikator "masih relevan", karena tim tidak selalu menyentuh tiket lama
 // walau isunya masih dipantau di produksi). Set >0 kalau ingin dibatasi.
-const PLATO_JIRA_LOOKBACK_DAYS = Number(process.env.PLATO_JIRA_LOOKBACK_DAYS || 0);
+const PLATO_JIRA_LOOKBACK_DAYS = Number(
+  process.env.PLATO_JIRA_LOOKBACK_DAYS || 0,
+);
 const PLATO_APPLICATION = process.env.PLATO_APPLICATION || "";
 
 // ─── HTTP client (mTLS) ─────────────────────────────────────────────────────
@@ -135,7 +143,7 @@ export async function fetchTop10({ dateFrom, dateTo, pageSize = PLATO_TOP_N }) {
   // Response Plato pakai snake_case walaupun schema Swagger menampilkan camelCase.
   const rows = (data?.data || []).map((r) => ({
     code: r.code,
-    subject: r.subject || "",
+    subject: cleanText(r.subject || ""),
     category: r.category || "",
     totalTicket: r.total_ticket ?? r.totalTicket ?? 0,
     totalBugs: r.total_bugs_application ?? r.totalBugsApplication ?? 0,
@@ -156,13 +164,16 @@ export async function fetchTop10({ dateFrom, dateTo, pageSize = PLATO_TOP_N }) {
 }
 
 export async function fetchTicketsBySop(sopCode, { dateFrom, dateTo }) {
-  const data = await platoGet(`/tickets/by-sop/${encodeURIComponent(sopCode)}`, {
-    date_from: dateFrom,
-    date_to: dateTo,
-    statistic_mode: "by_start_time",
-    page: 1,
-    page_size: 50,
-  });
+  const data = await platoGet(
+    `/tickets/by-sop/${encodeURIComponent(sopCode)}`,
+    {
+      date_from: dateFrom,
+      date_to: dateTo,
+      statistic_mode: "by_start_time",
+      page: 1,
+      page_size: 50,
+    },
+  );
   return data?.data || [];
 }
 
@@ -201,7 +212,9 @@ function extractSopInfoList(issue) {
   const desc = issue.fields.description || "";
   const summary = issue.fields.summary || "";
 
-  const matchingLines = desc.split(/\r?\n/).filter((line) => SOP_CODE_RE.test(line));
+  const matchingLines = desc
+    .split(/\r?\n/)
+    .filter((line) => SOP_CODE_RE.test(line));
 
   if (!matchingLines.length) {
     const codeMatch = SOP_CODE_RE.exec(summary);
@@ -217,9 +230,13 @@ function extractSopInfoList(issue) {
     const codeMatch = SOP_CODE_RE.exec(line);
     if (!codeMatch) continue;
     const code = codeMatch[0].toUpperCase().replace(/[\s-]/g, "");
-    if (!byCode.has(code)) byCode.set(code, cleanAfterMatch(line, codeMatch[0]));
+    if (!byCode.has(code))
+      byCode.set(code, cleanAfterMatch(line, codeMatch[0]));
   }
-  return [...byCode.entries()].map(([code, subjectLine]) => ({ code, subjectLine }));
+  return [...byCode.entries()].map(([code, subjectLine]) => ({
+    code,
+    subjectLine,
+  }));
 }
 
 /**
@@ -263,7 +280,9 @@ const SECTION_LABELS = [
 
 function isSectionLabelLine(line) {
   const stripped = line.replace(/\*/g, "").trim();
-  return SECTION_LABELS.some((label) => new RegExp(String.raw`^${label}\b`, "i").test(stripped));
+  return SECTION_LABELS.some((label) =>
+    new RegExp(String.raw`^${label}\b`, "i").test(stripped),
+  );
 }
 
 /**
@@ -321,8 +340,11 @@ function extractStructuredSections(desc) {
  * mana yang boleh masuk Top-10 (urutannya sendiri ditentukan oleh volume
  * tiket Plato minggu ini, lihat runPlatoReport).
  */
-async function fetchRecurringBugs({ lookbackDays = PLATO_JIRA_LOOKBACK_DAYS } = {}) {
-  const dateFilter = lookbackDays > 0 ? ` AND updated >= -${lookbackDays}d` : "";
+async function fetchRecurringBugs({
+  lookbackDays = PLATO_JIRA_LOOKBACK_DAYS,
+} = {}) {
+  const dateFilter =
+    lookbackDays > 0 ? ` AND updated >= -${lookbackDays}d` : "";
   const jql = `project = 'BUGS26' AND status != 'Invalid' AND summary ~ "BERULANG"${dateFilter} ORDER BY updated DESC`;
   const allIssues = [];
   let startAt = 0;
@@ -339,7 +361,14 @@ async function fetchRecurringBugs({ lookbackDays = PLATO_JIRA_LOOKBACK_DAYS } = 
         jql,
         startAt,
         maxResults,
-        fields: ["summary", "status", "description", "customfield_10613", "assignee", "updated"],
+        fields: [
+          "summary",
+          "status",
+          "description",
+          "customfield_10613",
+          "assignee",
+          "updated",
+        ],
       }),
     });
 
@@ -402,8 +431,12 @@ function groupBugsBySopCode(issues) {
       g.issues.push({
         key: issue.key,
         status: issue.fields.status?.name || "",
-        summary: (issue.fields.summary || "").replace(/\s*\r?\n\s*/g, " ").trim(),
-        sa: (issue.fields.customfield_10613 || []).map((u) => u.displayName || u.name),
+        summary: (issue.fields.summary || "")
+          .replace(/\s*\r?\n\s*/g, " ")
+          .trim(),
+        sa: (issue.fields.customfield_10613 || []).map(
+          (u) => u.displayName || u.name,
+        ),
         updated: issue.fields.updated,
       });
     }
@@ -420,6 +453,12 @@ const INVISIBLE_CHARS = /[\u200B-\u200D\uFEFF]/g;
 function cleanText(s) {
   return (s || "")
     .replace(INVISIBLE_CHARS, "")
+    // Placeholder blank yang belum diisi penulis tiket, mis. "Waktu Closing
+    // _______)" — bukan konten, cuma isyarat "isi di sini" yang lupa dihapus.
+    .replace(/_{2,}/g, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -465,7 +504,13 @@ function aggregateTicketsFallback(tickets) {
       return { date: `${d}/${m}/${y}`, total };
     });
 
-  return { totalTicket: tickets.length, totalBugs: bugs, totalHuman: human, totalInfra: infra, dailyTrends };
+  return {
+    totalTicket: tickets.length,
+    totalBugs: bugs,
+    totalHuman: human,
+    totalInfra: infra,
+    dailyTrends,
+  };
 }
 
 /** Tren harian jadi baris-baris berbullet, hanya hari yang ada tiketnya. */
@@ -495,7 +540,9 @@ function formatCc(names) {
   const seen = new Map(); // nomor -> label, sekaligus mencegah duplikat
   for (const full of names) {
     const lower = (full || "").toLowerCase();
-    const hit = Object.entries(SA_WA_NUMBERS).find(([key]) => lower.includes(key));
+    const hit = Object.entries(SA_WA_NUMBERS).find(([key]) =>
+      lower.includes(key),
+    );
     if (!hit) continue; // bukan tim SA Altros
     const [key, phone] = hit;
     if (!seen.has(phone)) seen.set(phone, `mas ${toTitleCase(key)} @${phone}`);
@@ -503,63 +550,94 @@ function formatCc(names) {
   return [...seen.values()].join(", ");
 }
 
-export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) {
+// Pembatas antar-issue — dipasang sebelum tiap item.
+const SECTION_DIVIDER = "═".repeat(28);
+
+export function formatPlatoReport({
+  rows,
+  summary,
+  details,
+  dateFrom,
+  dateTo,
+}) {
   const parts = [];
 
   rows.forEach((row, idx) => {
-    const d = details[row.code] || { tickets: [], jira: [], subjectLine: "", permasalahan: "", analisa: "", perbaikan: "" };
+    const d = details[row.code] || {
+      tickets: [],
+      jira: [],
+      subjectLine: "",
+      permasalahan: "",
+      analisa: "",
+      perbaikan: "",
+    };
 
-    parts.push(`${idx + 1}. ${row.code} ${row.subject}`);
+    const body = [];
+    body.push(`*${idx + 1}. ${row.code} ${row.subject}*`);
+    body.push("");
 
-    parts.push(`Summary Issue:`);
-    parts.push(`- Total: ${row.totalTicket}`);
-    parts.push(`- Bugs Aplikasi: ${row.totalBugs}`);
-    parts.push(`- Human Error: ${row.totalHuman}`);
-    parts.push(`- Infra: ${row.totalInfra}`);
+    // Sub-judul di-bold (tanda "*" tunggal = bold di WhatsApp) + dikasih
+    // jarak (baris kosong) sebelum & sesudah tiap section, sesuai revisi
+    // Mang Andrian: "tulisan Summary Issue, History Tiket, Permasalahan,
+    // Analisa, Perbaikan, Tiket Penyelesaian dibuat tulisan Bold" +
+    // "tambahin jarak paling ya sis yg td di Bold".
+    body.push(`*Summary Issue :*`);
+    body.push(`- Total: ${row.totalTicket}`);
+    body.push(`- Bugs Aplikasi: ${row.totalBugs}`);
+    body.push(`- Human Error: ${row.totalHuman}`);
+    body.push(`- Infra: ${row.totalInfra}`);
+    body.push("");
 
     const historyLines = formatHistoryLines(row.dailyTrends);
     if (historyLines.length) {
-      parts.push(`History Tiket:`);
-      parts.push(...historyLines);
+      body.push(`*History Tiket :*`);
+      body.push(...historyLines);
+      body.push("");
     }
 
-    parts.push(`Permasalahan :`);
+    body.push(`*Permasalahan :*`);
     if (d.permasalahan) {
-      parts.push(d.permasalahan);
+      body.push(d.permasalahan);
     } else if (d.subjectLine) {
-      parts.push(d.subjectLine);
+      body.push(d.subjectLine);
     } else {
       const problems = topDistinct(d.tickets, "problem", 3);
       if (problems.length) {
-        problems.forEach((p) => parts.push(problems.length > 1 ? `- ${p}` : p));
+        problems.forEach((p) => body.push(problems.length > 1 ? `- ${p}` : p));
       } else {
-        parts.push(`(belum ada detail permasalahan)`);
+        body.push(`(belum ada detail permasalahan)`);
       }
     }
+    body.push("");
 
     // Diambil dari section "Analisa"/"Perbaikan yang dilakukan" pada deskripsi
     // tiket Jira (kalau tersedia) — kalau tidak ada, wajib dilengkapi manual.
-    parts.push(`Analisa :`);
-    parts.push(d.analisa || `[ISI MANUAL - root cause & progress penanganan]`);
+    body.push(`*Analisa :*`);
+    body.push(d.analisa || `[ISI MANUAL - root cause & progress penanganan]`);
+    body.push("");
     if (d.perbaikan) {
-      parts.push(`Perbaikan :`);
-      parts.push(d.perbaikan);
+      body.push(`*Perbaikan :*`);
+      body.push(d.perbaikan);
+      body.push("");
     }
 
     if (d.jira.length) {
-      parts.push(`Tiket Penyelesaian:`);
+      body.push(`*Tiket Penyelesaian :*`);
       d.jira
         .slice(0, 5)
-        .forEach((j) => parts.push(`- ${j.key} : ${j.status} || ${j.summary}`));
+        .forEach((j) => body.push(`- ${j.key} : ${j.status} || ${j.summary}`));
     }
 
     const ccNames = [...new Set(d.jira.flatMap((j) => j.sa))];
     const cc = formatCc(ccNames);
-    if (cc) parts.push(`cc : ${cc}`);
+    if (cc) body.push(`cc : ${cc}`);
 
+    parts.push(SECTION_DIVIDER);
+    parts.push(...body);
     parts.push("");
   });
 
+  parts.push(SECTION_DIVIDER);
   parts.push(
     `Ringkasan periode ${dateFrom} s/d ${dateTo} — Bugs Aplikasi: ${summary.totalBugs} | Human Error: ${summary.totalHuman} | Infra: ${summary.totalInfra}`,
   );
@@ -577,7 +655,9 @@ export function formatPlatoReport({ rows, summary, details, dateFrom, dateTo }) 
  */
 export async function runPlatoReport(sendMessage = null, isDebug = false) {
   const { dateFrom, dateTo } = getReportRange();
-  console.log(`📊 Plato Top-10: ${dateFrom} s/d ${dateTo} (${PLATO_RANGE_DAYS} hari terakhir)`);
+  console.log(
+    `📊 Plato Top-10: ${dateFrom} s/d ${dateTo} (${PLATO_RANGE_DAYS} hari terakhir)`,
+  );
 
   // Sumber SELEKSI Top-10 adalah Plato sendiri, sort by Bugs Aplikasi
   // tertinggi — persis kriteria yang dipakai laporan manual (dikonfirmasi
@@ -590,7 +670,9 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     dateTo,
     pageSize: PLATO_TOP_N,
   });
-  console.log(`📊 ${platoTop10.length} SOP terpilih dari Plato (sort: Bugs Aplikasi tertinggi).`);
+  console.log(
+    `📊 ${platoTop10.length} SOP terpilih dari Plato (sort: Bugs Aplikasi tertinggi).`,
+  );
 
   if (!platoTop10.length) {
     console.log("⚠️ Plato tidak mengembalikan data Top-10. Report dibatalkan.");
@@ -599,7 +681,9 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
 
   // Jira [BERULANG] tetap dipindai penuh (tanpa batas), tapi sekarang cuma
   // dipakai sebagai LOOKUP per kode terpilih — bukan sumber daftar kandidat.
-  console.log(`🔎 Mencari tiket BUGS26 [BERULANG] (${PLATO_JIRA_LOOKBACK_DAYS} hari terakhir)...`);
+  console.log(
+    `🔎 Mencari tiket BUGS26 [BERULANG] (${PLATO_JIRA_LOOKBACK_DAYS} hari terakhir)...`,
+  );
   const recurringIssues = await fetchRecurringBugs();
   const groups = groupBugsBySopCode(recurringIssues);
   console.log(
@@ -618,7 +702,8 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
       console.warn(`⚠️ Detail tiket ${platoRow.code} gagal: ${e.message}`);
     }
 
-    const subject = platoRow.subject || group?.subjectLine || group?.issues[0]?.summary || "";
+    const subject =
+      platoRow.subject || group?.subjectLine || group?.issues[0]?.summary || "";
 
     rows.push({
       code: platoRow.code,
