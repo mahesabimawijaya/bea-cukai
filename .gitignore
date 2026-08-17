@@ -52,3 +52,6 @@ chrome-enterprise-*.json
 
 # preview lokal render gambar Plato (--plato-dry-run)
 scripts/_plato-preview/
+
+# preview lokal render gambar Cukai (--cukai-dry-run)
+scripts/_cukai-preview/

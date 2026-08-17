@@ -127,6 +127,51 @@ export async function renderStatTableImage(rows) {
   }
 }
 
+// ─── Tabel 1b: Ticket Statistic versi Cukai (sumber dash-tiket) ─────────────
+
+/**
+ * dash-tiket tidak punya pemilahan Bugs Aplikasi / Kesalahan Pengguna /
+ * Gangguan Infra seperti Plato — dimensi yang tersedia cuma Kantor, Posisi,
+ * dan Status Layanan. Jadi kolom breakdown-nya diganti sebaran kantor, yang
+ * menunjukkan di mana masalahnya terkonsentrasi.
+ */
+export async function renderCukaiStatTableImage(rows) {
+  try {
+    const bodyRows = rows
+      .map(
+        (r, idx) => `
+      <tr>
+        <td>${idx + 1}</td>
+        <td><b>${escapeHtml(r.code)}</b></td>
+        <td class="subject">${escapeHtml(r.subject)}</td>
+        <td><b>${r.totalTicket}</b></td>
+        <td class="subject">${escapeHtml(
+          (r.kantorList || [])
+            .slice(0, 3)
+            .map((k) => `${k.nama_kantor_pendek} (${k.jumlah})`)
+            .join(", ") || "-",
+        )}</td>
+      </tr>`,
+      )
+      .join("");
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>${BASE_STYLE}</style></head>
+    <body>
+      <table id="capture">
+        <thead><tr>
+          <th>No</th><th>Kode</th><th>Kategori</th><th>Total Tiket</th><th>Kantor Terbanyak</th>
+        </tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </body></html>`;
+
+    return await renderHtmlTableToPng(html);
+  } catch (e) {
+    console.warn("⚠️ Gagal render gambar tabel statistik Cukai:", e.message);
+    return null;
+  }
+}
+
 // ─── Tabel 2: History Top 10 by SOP and Date ────────────────────────────────
 
 /**
@@ -147,7 +192,12 @@ function computeTrend(dateTotalMap, dates, compareDays) {
   return "flat";
 }
 
-export async function renderHistoryTableImage(rows, { displayDays = 7 } = {}) {
+export async function renderHistoryTableImage(
+  rows,
+  // codeLabel: laporan Plato memakai kode SOP, laporan Cukai memakai kode
+  // dokumen (CK-1, LACK-1, ...) yang bukan SOP — jangan salah label.
+  { displayDays = 7, codeLabel = "SOP" } = {},
+) {
   try {
     // Ambil 2x displayDays hari kalender (butuh dobel buat hitung tren
     // "N hari ini vs N hari sebelumnya"), tapi cuma displayDays yang ditampilkan.
@@ -205,7 +255,7 @@ export async function renderHistoryTableImage(rows, { displayDays = 7 } = {}) {
     <body>
       <table id="capture">
         <thead>
-          <tr><th rowspan="2">No</th><th rowspan="2">SOP</th><th rowspan="2">Subject</th>${monthHeaderHtml}<th rowspan="2"></th></tr>
+          <tr><th rowspan="2">No</th><th rowspan="2">${escapeHtml(codeLabel)}</th><th rowspan="2">Subject</th>${monthHeaderHtml}<th rowspan="2"></th></tr>
           <tr>${dateHeaderHtml}</tr>
         </thead>
         <tbody>${bodyRows}</tbody>

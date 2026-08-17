@@ -19,6 +19,7 @@ import {
 import { initDB, runSlaCheck } from "./cron-sla-whatsapp.mjs";
 import { generateRekapFromCSV, generateRekapFromAPI } from "./cron-rekap.mjs";
 import { runPlatoReport } from "./cron-plato.mjs";
+import { runCukaiReport } from "./cron-cukai.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,6 +36,10 @@ const DEV_REPORT_SCHEDULE = process.env.DEV_REPORT_SCHEDULE || "5 16 * * 1-5";
 // Top-10 Plato: mingguan, Jumat 16:10 (offset agar tidak bentrok snapshot 16:03 & 16:05)
 const PLATO_SCHEDULE = process.env.PLATO_SCHEDULE || "10 16 * * 5";
 const PLATO_SCHEDULE_ENABLED = process.env.PLATO_SCHEDULE_ENABLED === "true";
+// Top-10 Cukai: harian Senin-Jumat 16:10. Default OFF sampai formatnya
+// disetujui, sama seperti kondisi Plato sekarang.
+const CUKAI_SCHEDULE = process.env.CUKAI_SCHEDULE || "10 16 * * 1-5";
+const CUKAI_SCHEDULE_ENABLED = process.env.CUKAI_SCHEDULE_ENABLED === "true";
 const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
 const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 
@@ -337,10 +342,35 @@ client.on("message", async (msg) => {
       return;
     }
 
-    // 0. Plato Top-10 Trigger (SA Group + Report Group) — keyword hint "top 10" / "top-10"
+    // Dua laporan Top-10 dengan sumber data berbeda, masing-masing minta
+    // keyword eksplisit ("top 10 cukai" / "top 10 plato") supaya tidak ada
+    // yang kepicu tanpa sengaja dan supaya jelas mana yang diminta.
+
+    // 0a. Top-10 Cukai (Report Group) — sumbernya dash-tiket, bukan Plato.
+    // Diminta langsung ke grup utama, jadi scope-nya WA_GROUP_ID_REPORT.
+    if (
+      msg.from === WA_GROUP_ID_REPORT &&
+      (text.includes("top 10 cukai") || text.includes("top-10 cukai"))
+    ) {
+      console.log(
+        `💬 Received manual CUKAI Top-10 request from ${msg.author || msg.from}`,
+      );
+      try {
+        await runCukaiReport(
+          (t, media) => sendWhatsAppMessage(t, WA_GROUP_ID_REPORT, media),
+          false,
+        );
+      } catch (e) {
+        console.error("Manual Cukai Error:", e);
+        await msg.reply(`❌ Gagal generate Top-10 Cukai: ${e.message}`);
+      }
+      return;
+    }
+
+    // 0b. Top-10 Plato / keseluruhan (SA Group + Report Group).
     if (
       (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_REPORT) &&
-      (text.includes("top 10") || text.includes("top-10"))
+      (text.includes("top 10 plato") || text.includes("top-10 plato"))
     ) {
       console.log(
         `💬 Received manual PLATO Top-10 request from ${msg.author || msg.from}`,
@@ -357,8 +387,14 @@ client.on("message", async (msg) => {
       return;
     }
 
-    // 1. Text Report Trigger (BC Group)
-    if (msg.from === WA_GROUP_ID_REPORT && (isMentioned || text.includes("!report") || text.includes("@notibot")) && !text.includes("!excel")) {
+    // 1. Text Report Trigger (BC Group) — laporan "Daily Progress - Tim SA".
+    // Dipicu keyword, BUKAN mention bot lagi: mention gampang kepicu tidak
+    // sengaja (mis. orang me-reply/quote pesan bot) dan bikin laporan panjang
+    // terkirim tanpa diminta.
+    if (
+      msg.from === WA_GROUP_ID_REPORT &&
+      text.includes("perkembangan penanganan")
+    ) {
       console.log(
         `💬 Received manual TEXT report request from ${msg.author || msg.from} (text: ${text})`,
       );
@@ -443,12 +479,20 @@ async function main() {
   const isOnceRekap = process.argv.includes("--once-rekap");
   const isOnceDevReport = process.argv.includes("--once-dev-report");
   const isOncePlato = process.argv.includes("--once-plato");
+  const isOnceCukai = process.argv.includes("--once-cukai");
   // Preview di terminal saja, tanpa kirim WA & tanpa butuh WhatsApp client.
   const isPlatoDryRun = process.argv.includes("--plato-dry-run");
+  const isCukaiDryRun = process.argv.includes("--cukai-dry-run");
 
   if (isPlatoDryRun) {
     console.log("🚀 Running Plato Top-10 (DRY RUN — tidak dikirim ke WA)...");
     await runPlatoReport(null, true);
+    process.exit(0);
+  }
+
+  if (isCukaiDryRun) {
+    console.log("🚀 Running Top-10 Cukai (DRY RUN — tidak dikirim ke WA)...");
+    await runCukaiReport(null, true);
     process.exit(0);
   }
 
@@ -467,7 +511,7 @@ async function main() {
   client.initialize();
 
   // If we only want to run a one-shot command from terminal, we wait for client ready, run it, and exit.
-  if (isOnceSla || isOnceReport || isOnceRekap || isOnceDevReport || isOncePlato) {
+  if (isOnceSla || isOnceReport || isOnceRekap || isOnceDevReport || isOncePlato || isOnceCukai) {
     client.on("ready", async () => {
       if (isOnceSla) {
         console.log("🚀 Running one-shot SLA Check...");
@@ -496,6 +540,10 @@ async function main() {
       if (isOncePlato) {
         console.log("🚀 Running one-shot Plato Top-10 Report...");
         await runPlatoReport((text, media) => sendWhatsAppMessage(text, WA_GROUP_ID, media), true);
+      }
+      if (isOnceCukai) {
+        console.log("🚀 Running one-shot Top-10 Cukai Report...");
+        await runCukaiReport((text, media) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT, media), true);
       }
       console.log("\n🏁 Done.");
 
@@ -668,6 +716,38 @@ async function main() {
             break;
           } catch (e) {
             console.error(`Plato Top-10 Cron Error (attempt ${attempt}):`, e);
+            if (attempt < maxAttempts) {
+              console.log(`⏳ Retrying in 60 seconds...`);
+              await new Promise((r) => setTimeout(r, 60_000));
+            }
+          }
+        }
+      },
+      {
+        timezone: "Asia/Jakarta",
+        recoverMissedExecutions: true,
+      },
+    );
+  }
+
+  // 6b. Top-10 Cukai (default harian Senin-Jumat 16:10, sumber dash-tiket)
+  if (CUKAI_SCHEDULE_ENABLED) {
+    cron.schedule(
+      CUKAI_SCHEDULE,
+      async () => {
+        if (!isClientReady) return;
+        let attempt = 0;
+        const maxAttempts = 3;
+        while (attempt < maxAttempts) {
+          attempt++;
+          try {
+            console.log(
+              `⏰ Menjalankan Scheduled Top-10 Cukai (attempt ${attempt}/${maxAttempts})...`,
+            );
+            await runCukaiReport((text, media) => sendWhatsAppMessage(text, WA_GROUP_ID_REPORT, media), false);
+            break;
+          } catch (e) {
+            console.error(`Top-10 Cukai Cron Error (attempt ${attempt}):`, e);
             if (attempt < maxAttempts) {
               console.log(`⏳ Retrying in 60 seconds...`);
               await new Promise((r) => setTimeout(r, 60_000));

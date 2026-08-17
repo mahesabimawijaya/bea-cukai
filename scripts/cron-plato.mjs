@@ -179,7 +179,7 @@ export async function fetchTicketsBySop(sopCode, { dateFrom, dateTo }) {
 
 // ─── Jira: sumber utama Top-10 (bug [BERULANG] yang aktif dimonitor) ─────────
 
-function jiraAuthHeader() {
+export function jiraAuthHeader() {
   return process.env.JIRA_PAT
     ? `Bearer ${process.env.JIRA_PAT}`
     : `Basic ${Buffer.from(
@@ -327,7 +327,7 @@ function extractSection(desc, labelPattern) {
   return collected.join("\n").trim();
 }
 
-function extractStructuredSections(desc) {
+export function extractStructuredSections(desc) {
   return {
     permasalahan: extractSection(desc, /^permasalahan\s*:?$/i),
     analisa: extractSection(desc, /^analisa\s*:?$/i),
@@ -450,7 +450,7 @@ function groupBugsBySopCode(issues) {
 // Data Plato kadang mengandung zero-width / BOM (lihat "wk_inout⎘🌐" di report manual).
 const INVISIBLE_CHARS = /[\u200B-\u200D\uFEFF]/g;
 
-function cleanText(s) {
+export function cleanText(s) {
   return (s || "")
     .replace(INVISIBLE_CHARS, "")
     // Placeholder blank yang belum diisi penulis tiket, mis. "Waktu Closing
@@ -464,7 +464,7 @@ function cleanText(s) {
 }
 
 /** Ambil nilai unik terbanyak dari sebuah field di daftar tiket. */
-function topDistinct(tickets, field, limit = 3) {
+export function topDistinct(tickets, field, limit = 3) {
   const counts = new Map();
   for (const t of tickets) {
     const v = cleanText(t[field]);
@@ -514,7 +514,7 @@ function aggregateTicketsFallback(tickets) {
 }
 
 /** Tren harian jadi baris-baris berbullet, hanya hari yang ada tiketnya. */
-function formatHistoryLines(dailyTrends) {
+export function formatHistoryLines(dailyTrends) {
   return (dailyTrends || [])
     .filter((d) => (d.total || 0) > 0)
     .slice(0, 7)
@@ -550,8 +550,9 @@ function formatCc(names) {
   return [...seen.values()].join(", ");
 }
 
-// Pembatas antar-issue — dipasang sebelum tiap item.
-const SECTION_DIVIDER = "═".repeat(28);
+// Pembatas antar-issue — dipasang sebelum tiap item. Di-export supaya laporan
+// Cukai (cron-cukai.mjs) memakai pembatas yang sama persis, bukan salinan.
+export const SECTION_DIVIDER = "═".repeat(28);
 
 export function formatPlatoReport({
   rows,

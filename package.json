@@ -16,6 +16,8 @@
     "cron:rekap:once": "node scripts/bot-whatsapp.mjs --once-rekap",
     "cron:plato:once": "node scripts/bot-whatsapp.mjs --once-plato",
     "cron:plato:dry": "node scripts/bot-whatsapp.mjs --plato-dry-run",
+    "cron:cukai:once": "node scripts/bot-whatsapp.mjs --once-cukai",
+    "cron:cukai:dry": "node scripts/bot-whatsapp.mjs --cukai-dry-run",
     "cron:sla:telegram": "node scripts/cron-sla-telegram.mjs",
     "cron:sla:telegram:once": "node scripts/cron-sla-telegram.mjs --once",
     "cron:test:mention": "node scripts/test-mention.mjs",
