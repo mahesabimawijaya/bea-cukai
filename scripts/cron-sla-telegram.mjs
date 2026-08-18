@@ -3,7 +3,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
 import pkg from "pg";
-const { Client } = pkg;
+const { Pool } = pkg;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
@@ -27,8 +27,13 @@ async function initDB() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is not set");
   }
-  dbClient = new Client({ connectionString: process.env.DATABASE_URL });
-  await dbClient.connect();
+  // Pool + listener 'error' - lihat penjelasan lengkap di cron-sla-whatsapp.mjs.
+  // Tanpa listener, koneksi DB yang putus membunuh seluruh proses.
+  dbClient = new Pool({ connectionString: process.env.DATABASE_URL });
+  dbClient.on("error", (err) => {
+    console.error("⚠️ Koneksi DB idle bermasalah (Pool akan menggantinya sendiri):", err.message);
+  });
+  await dbClient.query("SELECT 1");
 
   await dbClient.query(`
     CREATE TABLE IF NOT EXISTS jira_sla_alerts (

@@ -20,6 +20,7 @@ import { initDB, runSlaCheck } from "./cron-sla-whatsapp.mjs";
 import { generateRekapFromCSV, generateRekapFromAPI } from "./cron-rekap.mjs";
 import { runPlatoReport } from "./cron-plato.mjs";
 import { runCukaiReport } from "./cron-cukai.mjs";
+import { hariIniJakarta, isHariLibur, namaLibur } from "./hari-libur.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,25 @@ const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 if (!WA_GROUP_ID) {
   console.error("Missing WA_GROUP_ID in .env");
   process.exit(1);
+}
+
+/**
+ * Penjaga hari libur untuk job terjadwal.
+ *
+ * Cron-nya sendiri tetap "* * 1-5" (Senin–Jumat) karena node-cron tidak
+ * mengenal libur nasional. Jadi penyaringannya dilakukan di dalam handler:
+ * kalau hari ini libur, job dilewati dan alasannya dicatat di log.
+ *
+ * Memakai hariIniJakarta(), BUKAN tanggal lokal mesin — log produksi di RDP
+ * memperlihatkan ketidakcocokan timezone (cron menyala 20:00 WIB padahal
+ * diset 16:00), jadi tanggal WIB harus dihitung eksplisit supaya di sekitar
+ * tengah malam tidak salah hari.
+ */
+function lewatiKalauLibur(namaJob) {
+  const key = hariIniJakarta();
+  if (!isHariLibur(key)) return false;
+  console.log(`🎌 ${namaJob} dilewati — ${namaLibur(key)} (${key}).`);
+  return true;
 }
 
 // ─── Initialize WhatsApp Web Client ─────────────────────────────────────────
@@ -604,6 +624,7 @@ async function main() {
     REPORT_SCHEDULE,
     async () => {
       if (!isClientReady) return;
+      if (lewatiKalauLibur("Snapshot SA")) return;
       let attempt = 0;
       const maxAttempts = 3;
       while (attempt < maxAttempts) {
@@ -632,6 +653,7 @@ async function main() {
     "0 17 * * 1-5",
     async () => {
       if (!isClientReady) return;
+      if (lewatiKalauLibur("Pengiriman Excel SA")) return;
       try {
         console.log("⏰ Menjalankan Scheduled Excel Report Sending (17:00)...");
         await runReport(
@@ -654,6 +676,7 @@ async function main() {
     DEV_REPORT_SCHEDULE,
     async () => {
       if (!isClientReady) return;
+      if (lewatiKalauLibur("Snapshot DEV")) return;
       let attempt = 0;
       const maxAttempts = 3;
       while (attempt < maxAttempts) {
@@ -682,6 +705,7 @@ async function main() {
     "5 17 * * 1-5",
     async () => {
       if (!isClientReady) return;
+      if (lewatiKalauLibur("Pengiriman Excel DEV")) return;
       try {
         console.log("⏰ Menjalankan Scheduled DEV Excel Report Sending (17:05)...");
         await runReportDev(
@@ -704,6 +728,7 @@ async function main() {
       PLATO_SCHEDULE,
       async () => {
         if (!isClientReady) return;
+        if (lewatiKalauLibur("Top-10 Plato")) return;
         let attempt = 0;
         const maxAttempts = 3;
         while (attempt < maxAttempts) {
@@ -736,6 +761,7 @@ async function main() {
       CUKAI_SCHEDULE,
       async () => {
         if (!isClientReady) return;
+        if (lewatiKalauLibur("Top-10 Cukai")) return;
         let attempt = 0;
         const maxAttempts = 3;
         while (attempt < maxAttempts) {
@@ -768,6 +794,7 @@ async function main() {
       REKAP_SCHEDULE,
       async () => {
         if (!isClientReady) return;
+        if (lewatiKalauLibur("Rekap Status Develop")) return;
         try {
           console.log(
             `⏰ Menjalankan Scheduled Status Develop Rekap... (Silent Mode)`,

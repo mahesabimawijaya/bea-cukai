@@ -392,22 +392,29 @@ export async function saveDailyExcelSnapshotDev() {
     const { date } = formatDateTime();
     const rows = formatExcelRowsDev(grouped, date);
 
+    // DB dan Sheets sengaja DIPISAH total — lihat catatan yang sama di
+    // cron-whatsapp.mjs. Kegagalan DB tidak boleh ikut membatalkan Sheets.
     if (!dbClient) {
-      console.warn("⚠️ [DEV] dbClient not initialized! Cannot save snapshot.");
-      return;
-    }
-
-    await dbClient.query(
-      `INSERT INTO jira_dev_excel_history (snapshot_date, rows_data)
+      console.warn("⚠️ [DEV] dbClient not initialized! Snapshot DB dilewati.");
+    } else {
+      try {
+        await dbClient.query(
+          `INSERT INTO jira_dev_excel_history (snapshot_date, rows_data)
        VALUES ($1, $2)
        ON CONFLICT (snapshot_date) DO UPDATE SET rows_data = $2, created_at = CURRENT_TIMESTAMP`,
-      [date, JSON.stringify(rows)],
-    );
-    console.log(`✅ [DEV] Saved ${rows.length} rows to DB for date: ${date}`);
+          [date, JSON.stringify(rows)],
+        );
+        console.log(`✅ [DEV] Saved ${rows.length} rows to DB for date: ${date}`);
+      } catch (dbErr) {
+        console.error(
+          `❌ [DEV] Snapshot DB gagal untuk ${date} — lanjut ke Google Sheets.`,
+          dbErr.message,
+        );
+      }
+    }
 
-    // Snapshot DB di atas sudah aman tersimpan, jadi kegagalan Sheets (setelah
-    // semua retry) tidak menggagalkan job ini. Data hari ini bisa disusulkan
-    // lewat re-run karena penulisannya idempoten.
+    // Kegagalan Sheets (setelah semua retry) juga tidak menggagalkan job ini.
+    // Data bisa disusulkan lewat re-run karena penulisannya idempoten.
     try {
       await writeToGoogleSheetsDev(rows, date);
     } catch (gErr) {

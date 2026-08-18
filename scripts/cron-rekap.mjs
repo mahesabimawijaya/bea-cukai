@@ -1,5 +1,6 @@
 import { parse } from "csv-parse/sync";
 import { getStatusRank } from "./cron-whatsapp.mjs";
+import { isHariLibur, toDateKey } from "./hari-libur.mjs";
 
 const DEFAULT_HEADER = "Izin Pak Pur, @6282111622789. Pak Tag, @6281382128898.\nBerikut kami sampaikan update status development saat ini. Untuk progres task yang memerlukan waktu pengerjaan paling lama adalah sebagai berikut:\n";
 
@@ -64,6 +65,13 @@ function formatLine(row) {
   return `- ${row.Key} ${status} | ${summary}`;
 }
 
+/**
+ * Umur task dalam HARI KERJA - inilah angka "yang terlama" di laporan rekap.
+ *
+ * Selain Sabtu/Minggu, hari libur nasional & cuti bersama juga tidak dihitung.
+ * Sebelumnya hanya akhir pekan yang dilewati, sehingga 17 Agustus 2026 (HUT RI)
+ * sempat terhitung sebagai hari kerja dan bikin umur task kelebihan satu hari.
+ */
 function getWorkingDays(startDateStr, endDateStr) {
   let count = 0;
   let curDate = new Date(startDateStr);
@@ -75,7 +83,8 @@ function getWorkingDays(startDateStr, endDateStr) {
   while (curDate < targetDate) {
     curDate.setDate(curDate.getDate() + 1);
     const day = curDate.getDay();
-    if (day !== 0 && day !== 6) { // not Sunday (0) or Saturday (6)
+    const akhirPekan = day === 0 || day === 6; // Minggu (0) atau Sabtu (6)
+    if (!akhirPekan && !isHariLibur(toDateKey(curDate))) {
       count++;
     }
   }

@@ -3,7 +3,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron";
 import pkg from "pg";
-const { Client } = pkg;
+const { Pool } = pkg;
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,8 +28,25 @@ export async function initDB() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is not set");
   }
-  dbClient = new Client({ connectionString: process.env.DATABASE_URL });
-  await dbClient.connect();
+
+  // Pool, BUKAN Client. Client tunggal yang dipegang berjam-jam akan mati
+  // permanen begitu koneksinya putus sekali (server restart, idle timeout,
+  // atau jaringan kedip) - semua query sesudahnya gagal sampai proses
+  // di-restart. Pool membuang koneksi mati dan bikin yang baru sendiri.
+  dbClient = new Pool({ connectionString: process.env.DATABASE_URL });
+
+  // WAJIB ADA. Tanpa listener 'error', koneksi yang putus di luar query aktif
+  // membuat EventEmitter Node melempar 'Unhandled error event' yang MEMBUNUH
+  // seluruh proses bot - bukan cuma menggagalkan query. Ini yang bikin bot
+  // mati berulang (PM2 restart 4x) dan cron snapshot 20:00 tidak pernah jalan
+  // lagi setelah 12 Agustus 2026.
+  dbClient.on("error", (err) => {
+    console.error("⚠️ Koneksi DB idle bermasalah (Pool akan menggantinya sendiri):", err.message);
+  });
+
+  // Pool connect secara lazy, jadi dipancing sekali supaya kegagalan
+  // kredensial/jaringan ketahuan sekarang, bukan nanti saat cron jalan.
+  await dbClient.query("SELECT 1");
 
   await dbClient.query(`
     CREATE TABLE IF NOT EXISTS jira_sla_alerts (

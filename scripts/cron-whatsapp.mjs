@@ -557,22 +557,35 @@ export async function saveDailyExcelSnapshot() {
     const { date } = formatDateTime();
     const rows = formatExcelRows(grouped, date);
 
+    // DB dan Sheets sengaja DIPISAH total: keduanya tujuan yang berdiri
+    // sendiri, jadi kegagalan salah satu tidak boleh membatalkan yang lain.
+    //
+    // Sebelumnya blok DB ini `return` saat dbClient kosong (dan error query-nya
+    // lolos ke catch luar), sehingga setiap kali DB timeout — yang terbukti
+    // sering terjadi di server ini — Sheets ikut terlewat tanpa ada yang sadar.
+    // Itu penyebab logbook mandek sejak 12 Agustus 2026.
     if (!dbClient) {
-      console.warn("⚠️ dbClient is not initialized! Cannot save snapshot.");
-      return;
+      console.warn("⚠️ dbClient is not initialized! Snapshot DB dilewati.");
+    } else {
+      try {
+        await dbClient.query(
+          `INSERT INTO jira_sa_excel_history (snapshot_date, rows_data)
+       VALUES ($1, $2)
+       ON CONFLICT (snapshot_date) DO UPDATE SET rows_data = $2, created_at = CURRENT_TIMESTAMP`,
+          [date, JSON.stringify(rows)],
+        );
+        console.log(`✅ Saved ${rows.length} rows to DB for date: ${date}`);
+      } catch (dbErr) {
+        console.error(
+          `❌ Snapshot DB (SA) gagal untuk ${date} — lanjut ke Google Sheets.`,
+          dbErr.message,
+        );
+      }
     }
 
-    await dbClient.query(
-      `INSERT INTO jira_sa_excel_history (snapshot_date, rows_data) 
-       VALUES ($1, $2) 
-       ON CONFLICT (snapshot_date) DO UPDATE SET rows_data = $2, created_at = CURRENT_TIMESTAMP`,
-      [date, JSON.stringify(rows)],
-    );
-    console.log(`✅ Saved ${rows.length} rows to DB for date: ${date}`);
-
-    // Google Sheets Integration — snapshot DB di atas sudah aman tersimpan,
-    // jadi kegagalan Sheets (setelah semua retry) tidak menggagalkan job ini.
-    // Data hari ini bisa disusulkan lewat re-run karena penulisannya idempoten.
+    // Google Sheets Integration — kegagalan Sheets (setelah semua retry) juga
+    // tidak menggagalkan job ini. Data bisa disusulkan lewat re-run karena
+    // penulisannya idempoten.
     try {
       await writeToGoogleSheets(rows, date);
     } catch (gErr) {
