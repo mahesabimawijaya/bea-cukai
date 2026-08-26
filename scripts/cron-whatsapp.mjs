@@ -545,17 +545,28 @@ function formatExcelRows(grouped, dateStr) {
 
 export { groupTasksBySA, formatExcelRows, writeToGoogleSheets };
 
+/**
+ * Kembalikan status per-tujuan, JANGAN cuma menelan error.
+ *
+ * Dulu fungsi ini selalu return undefined apapun yang terjadi — DB timeout,
+ * kredensial Google hilang, Sheets ditolak — semuanya cuma jadi baris log yang
+ * tidak ada yang baca. Akibatnya logbook bisa kosong berhari-hari tanpa ada yang
+ * sadar (19-26 Agustus 2026). Sekarang pemanggilnya bisa tahu dan mengirim alert.
+ */
 export async function saveDailyExcelSnapshot() {
   const timestamp = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta",
   });
   console.log(`\n🕐 [${timestamp}] Running saveDailyExcelSnapshot...`);
+  const hasil = { date: null, rowCount: 0, dbOk: false, sheetsOk: false, error: null };
   try {
     const issues = await fetchJiraTasks();
     const grouped = groupTasksBySA(issues);
 
     const { date } = formatDateTime();
     const rows = formatExcelRows(grouped, date);
+    hasil.date = date;
+    hasil.rowCount = rows.length;
 
     // DB dan Sheets sengaja DIPISAH total: keduanya tujuan yang berdiri
     // sendiri, jadi kegagalan salah satu tidak boleh membatalkan yang lain.
@@ -575,11 +586,13 @@ export async function saveDailyExcelSnapshot() {
           [date, JSON.stringify(rows)],
         );
         console.log(`✅ Saved ${rows.length} rows to DB for date: ${date}`);
+        hasil.dbOk = true;
       } catch (dbErr) {
         console.error(
           `❌ Snapshot DB (SA) gagal untuk ${date} — lanjut ke Google Sheets.`,
           dbErr.message,
         );
+        hasil.error = dbErr.message;
       }
     }
 
@@ -587,16 +600,25 @@ export async function saveDailyExcelSnapshot() {
     // tidak menggagalkan job ini. Data bisa disusulkan lewat re-run karena
     // penulisannya idempoten.
     try {
-      await writeToGoogleSheets(rows, date);
+      const status = await writeToGoogleSheets(rows, date);
+      hasil.sheetsOk = status === "written";
+      if (!hasil.sheetsOk) {
+        // Bukan exception, tapi spreadsheet tetap TIDAK terisi — harus ketahuan.
+        hasil.error = `Google Sheets dilewati (${status})`;
+        console.warn(`⚠️ Google Sheets (SA) tidak ditulis untuk ${date}: ${status}`);
+      }
     } catch (gErr) {
       console.error(
         `❌ Sinkronisasi Google Sheets (SA) gagal total untuk ${date} — data sudah aman di DB, jalankan ulang untuk menyusul.`,
         gErr.message,
       );
+      hasil.error = gErr.message;
     }
   } catch (err) {
     console.error(`❌ Error in saveDailyExcelSnapshot:`, err);
+    hasil.error = err.message;
   }
+  return hasil;
 }
 
 /**
@@ -616,10 +638,10 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
 
   if (!fs.existsSync(CREDENTIALS_PATH)) {
     console.warn(`⚠️ Google Credentials not found at ${CREDENTIALS_PATH}. Skipping Google Sheets sync.`);
-    return;
+    return "skipped-no-credentials";
   }
 
-  if (currentRows.length === 0) return;
+  if (currentRows.length === 0) return "skipped-empty";
 
   const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
   const auth = new JWT({
@@ -824,6 +846,7 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
   }
 
   console.log(`✅ Appended ${currentRows.length} rows for ${date} to Google Sheet 'Logbook SA'.`);
+  return "written";
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────

@@ -174,10 +174,10 @@ export async function writeToGoogleSheetsDev(currentRows, date) {
 async function writeToGoogleSheetsDevOnce(currentRows, date) {
   if (!fs.existsSync(CREDENTIALS_PATH)) {
     console.warn(`⚠️ [DEV] Google Credentials not found. Skipping Sheets sync.`);
-    return;
+    return "skipped-no-credentials";
   }
 
-  if (currentRows.length === 0) return;
+  if (currentRows.length === 0) return "skipped-empty";
 
   const creds = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
   const auth = new JWT({
@@ -379,18 +379,23 @@ async function writeToGoogleSheetsDevOnce(currentRows, date) {
   }
 
   console.log(`✅ [DEV] Appended ${currentRows.length} rows for ${date} to '${DEV_SHEET_NAME}'.`);
+  return "written";
 }
 
 // ─── Snapshot (DB + Sheets) ───────────────────────────────────────────────────
 
+/** Kembalikan status per-tujuan — lihat catatan di saveDailyExcelSnapshot (cron-whatsapp.mjs). */
 export async function saveDailyExcelSnapshotDev() {
   const timestamp = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
   console.log(`\n🕐 [DEV] [${timestamp}] Running saveDailyExcelSnapshotDev...`);
+  const hasil = { date: null, rowCount: 0, dbOk: false, sheetsOk: false, error: null };
   try {
     const issues = await fetchJiraTasksDev();
     const grouped = groupTasksByDev(issues);
     const { date } = formatDateTime();
     const rows = formatExcelRowsDev(grouped, date);
+    hasil.date = date;
+    hasil.rowCount = rows.length;
 
     // DB dan Sheets sengaja DIPISAH total — lihat catatan yang sama di
     // cron-whatsapp.mjs. Kegagalan DB tidak boleh ikut membatalkan Sheets.
@@ -405,27 +410,37 @@ export async function saveDailyExcelSnapshotDev() {
           [date, JSON.stringify(rows)],
         );
         console.log(`✅ [DEV] Saved ${rows.length} rows to DB for date: ${date}`);
+        hasil.dbOk = true;
       } catch (dbErr) {
         console.error(
           `❌ [DEV] Snapshot DB gagal untuk ${date} — lanjut ke Google Sheets.`,
           dbErr.message,
         );
+        hasil.error = dbErr.message;
       }
     }
 
     // Kegagalan Sheets (setelah semua retry) juga tidak menggagalkan job ini.
     // Data bisa disusulkan lewat re-run karena penulisannya idempoten.
     try {
-      await writeToGoogleSheetsDev(rows, date);
+      const status = await writeToGoogleSheetsDev(rows, date);
+      hasil.sheetsOk = status === "written";
+      if (!hasil.sheetsOk) {
+        hasil.error = `Google Sheets dilewati (${status})`;
+        console.warn(`⚠️ [DEV] Google Sheets tidak ditulis untuk ${date}: ${status}`);
+      }
     } catch (gErr) {
       console.error(
         `❌ [DEV] Sinkronisasi Google Sheets gagal total untuk ${date} — data sudah aman di DB, jalankan ulang untuk menyusul.`,
         gErr.message,
       );
+      hasil.error = gErr.message;
     }
   } catch (err) {
     console.error(`❌ [DEV] Error in saveDailyExcelSnapshotDev:`, err);
+    hasil.error = err.message;
   }
+  return hasil;
 }
 
 // ─── Report (Excel → WA) ──────────────────────────────────────────────────────

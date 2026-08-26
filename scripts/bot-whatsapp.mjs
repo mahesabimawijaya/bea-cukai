@@ -32,14 +32,19 @@ const WA_GROUP_ID = process.env.WA_GROUP_ID;
 const WA_GROUP_ID_BC = process.env.WA_GROUP_ID_BC || WA_GROUP_ID;
 const WA_GROUP_ID_REPORT = process.env.WA_GROUP_ID_REPORT || WA_GROUP_ID;
 const WA_GROUP_ID_DEV = process.env.WA_GROUP_ID_DEV || WA_GROUP_ID;
-const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "3 16 * * 1-5";
-const DEV_REPORT_SCHEDULE = process.env.DEV_REPORT_SCHEDULE || "5 16 * * 1-5";
-// Top-10 Plato: mingguan, Jumat 16:10 (offset agar tidak bentrok snapshot 16:03 & 16:05)
-const PLATO_SCHEDULE = process.env.PLATO_SCHEDULE || "10 16 * * 5";
+// Menit sengaja BUKAN kelipatan 5 maupun 10: menit :00/:10/:20 dipakai Full
+// SLA Check (fetch 326 tiket + changelog — event loop ngeblok beberapa detik),
+// dan tiap kelipatan 5 dipakai health-check Puppeteer. Tabrakan di menit yang
+// sama bikin slot-nya dibuang node-cron; lihat MISSED_TOLERANCE_MS di bawah.
+const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "7 16 * * 1-5";
+const DEV_REPORT_SCHEDULE = process.env.DEV_REPORT_SCHEDULE || "12 16 * * 1-5";
+// Top-10 Plato: mingguan, Jumat 16:17 — di belakang snapshot (16:07 & 16:12),
+// dan menit :17 bukan kelipatan 5/10 sesuai alasan yang sama di atas.
+const PLATO_SCHEDULE = process.env.PLATO_SCHEDULE || "17 16 * * 5";
 const PLATO_SCHEDULE_ENABLED = process.env.PLATO_SCHEDULE_ENABLED === "true";
-// Top-10 Cukai: harian Senin-Jumat 16:10. Default OFF sampai formatnya
+// Top-10 Cukai: harian Senin-Jumat 16:22. Default OFF sampai formatnya
 // disetujui, sama seperti kondisi Plato sekarang.
-const CUKAI_SCHEDULE = process.env.CUKAI_SCHEDULE || "10 16 * * 1-5";
+const CUKAI_SCHEDULE = process.env.CUKAI_SCHEDULE || "22 16 * * 1-5";
 const CUKAI_SCHEDULE_ENABLED = process.env.CUKAI_SCHEDULE_ENABLED === "true";
 const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
 const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
@@ -47,6 +52,91 @@ const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 if (!WA_GROUP_ID) {
   console.error("Missing WA_GROUP_ID in .env");
   process.exit(1);
+}
+
+/**
+ * node-cron v4 MEMBUANG slot yang telat, bukan menundanya.
+ *
+ * `missedExecutionTolerance` default-nya cuma 1000 ms. Kalau timer heartbeat
+ * telat lebih dari itu — gampang terjadi di proses ini karena Puppeteer dan
+ * Full SLA Check (fetch 326 tiket + changelog) bisa memblokir event loop 5
+ * detik lebih — planBeat() menandai slot itu "missed", dan handler missed CUMA
+ * nge-log warning lalu membuangnya permanen. Itulah kenapa snapshot Logbook
+ * hilang tanpa jejak 19-26 Agustus 2026: tidak ada exception, tidak ada retry,
+ * cuma satu baris "[NODE-CRON] [WARN] missed execution at ...".
+ *
+ * JANGAN diturunkan lagi, dan JANGAN pakai `recoverMissedExecutions` — itu opsi
+ * node-cron v3 yang tidak ada di TaskOptions v4, jadi diabaikan diam-diam dan
+ * cuma memberi rasa aman palsu.
+ */
+const MISSED_TOLERANCE_MS = 5 * 60 * 1000;
+
+/** Opsi baku job harian — satu objek supaya tidak ada jadwal yang kelewat. */
+const DAILY_CRON_OPTS = {
+  timezone: "Asia/Jakarta",
+  missedExecutionTolerance: MISSED_TOLERANCE_MS,
+};
+
+/**
+ * Kalau sebuah slot sampai dibuang lagi, harus ada yang tahu SEKARANG — bukan
+ * 8 hari kemudian lewat komplain user.
+ */
+function awasiSlotHilang(task, label, perintahManual) {
+  task?.on?.("execution:missed", (ctx) => {
+    const pesan = [
+      `⚠️ ${label}: jadwal ${ctx?.date ?? "?"} DILEWATI node-cron (event loop ngeblok).`,
+      `Jalankan manual di RDP: npm run ${perintahManual}`,
+    ].join("\n");
+    console.error(pesan);
+    sendTelegramAlert(pesan);
+  });
+}
+
+/**
+ * Jalankan job snapshot dengan retry, lalu TERIAK ke Telegram kalau tetap gagal.
+ *
+ * Dulu kegagalan cuma console.error lalu menyerah diam-diam — dan karena
+ * saveDailyExcelSnapshot* menelan semua exception-nya sendiri, loop retry lama
+ * sebenarnya tidak pernah mengulang apa pun. Sekarang keduanya melaporkan
+ * {dbOk, sheetsOk} sehingga kegagalan parsial (DB masuk, Sheets tidak) ikut
+ * ketahuan.
+ */
+async function jalankanSnapshotDenganRetry(label, fn, perintahManual) {
+  const maxAttempts = 3;
+  let terakhir = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(
+      `⏰ Menjalankan Scheduled ${label} (attempt ${attempt}/${maxAttempts})...`,
+    );
+    try {
+      terakhir = await fn();
+      if (terakhir?.dbOk && terakhir?.sheetsOk) {
+        console.log(
+          `✅ ${label} selesai: ${terakhir.rowCount} baris untuk ${terakhir.date}.`,
+        );
+        return;
+      }
+    } catch (e) {
+      console.error(`${label} Cron Error (attempt ${attempt}):`, e);
+      terakhir = { error: e.message };
+    }
+    if (attempt < maxAttempts) {
+      console.log(`⏳ Retrying in 60 seconds...`);
+      await new Promise((r) => setTimeout(r, 60_000));
+    }
+  }
+
+  await sendTelegramAlert(
+    [
+      `❌ ${label} GAGAL setelah ${maxAttempts} percobaan.`,
+      `DB: ${terakhir?.dbOk ? "ok" : "GAGAL"} | Sheets: ${terakhir?.sheetsOk ? "ok" : "GAGAL"}`,
+      terakhir?.error ? `Error: ${terakhir.error}` : null,
+      `Jalankan manual di RDP: npm run ${perintahManual}`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 /**
@@ -516,6 +606,33 @@ async function main() {
     process.exit(0);
   }
 
+  // Snapshot sama sekali tidak menyentuh WhatsApp (Jira -> DB -> Sheets), jadi
+  // sengaja dicabang SEBELUM client.initialize(): recovery manual jadi cepat dan
+  // tidak bisa gagal gara-gara sesi WA lagi bermasalah.
+  const isOnceSnapshot = process.argv.includes("--once-snapshot");
+  const isOnceDevSnapshot = process.argv.includes("--once-dev-snapshot");
+  if (isOnceSnapshot || isOnceDevSnapshot) {
+    const label = isOnceSnapshot ? "Excel Snapshot SA" : "Excel Snapshot DEV";
+    const jalankan = isOnceSnapshot
+      ? saveDailyExcelSnapshot
+      : saveDailyExcelSnapshotDev;
+
+    // dbClient baru dibuat di dalam initDB() — tanpa ini snapshot melewati DB
+    // diam-diam dan cuma menulis Sheets.
+    try {
+      await initDB();
+    } catch (e) {
+      console.error("⚠️ initDB gagal, snapshot lanjut tanpa DB:", e.message);
+    }
+
+    console.log(`🚀 Running one-shot ${label} (tanpa WhatsApp)...`);
+    const hasil = await jalankan();
+    console.log(
+      `   DB: ${hasil?.dbOk ? "✅" : "❌"} | Sheets: ${hasil?.sheetsOk ? "✅" : "❌"} | ${hasil?.rowCount ?? 0} baris`,
+    );
+    process.exit(hasil?.dbOk && hasil?.sheetsOk ? 0 : 1);
+  }
+
   let isDbInitialized = false;
   try {
     await initDB();
@@ -615,38 +732,30 @@ async function main() {
       }
     },
     {
-      recoverMissedExecutions: true,
+      // Toleransi TIDAK dinaikkan di sini: jarak antar-slot cuma 60 detik dan
+      // planBeat() mensyaratkan lateBy < gap, jadi menaikkannya tidak berefek.
+      // noOverlap mencegah Full SLA Check yang lambat menumpuk ke slot berikutnya.
+      noOverlap: true,
     },
   );
 
-  // 2. Daily Historical Excel Snapshot (Scheduled at 16:03 — offset 3 min to avoid SLA check collision at 16:00)
-  cron.schedule(
+  // 2. Daily Historical Excel Snapshot.
+  // TIDAK dijaga isClientReady: job ini cuma Jira -> DB -> Google Sheets, tidak
+  // menyentuh WhatsApp sama sekali. Dulu dijaga, jadi tiap kali sesi WA kebetulan
+  // lagi reconnect di menit itu snapshot-nya hilang senyap.
+  const tugasSnapshotSA = cron.schedule(
     REPORT_SCHEDULE,
     async () => {
-      if (!isClientReady) return;
       if (lewatiKalauLibur("Snapshot SA")) return;
-      let attempt = 0;
-      const maxAttempts = 3;
-      while (attempt < maxAttempts) {
-        attempt++;
-        try {
-          console.log(`⏰ Menjalankan Scheduled Excel Snapshot (attempt ${attempt}/${maxAttempts})...`);
-          await saveDailyExcelSnapshot();
-          break;
-        } catch (e) {
-          console.error(`Excel Snapshot Cron Error (attempt ${attempt}):`, e);
-          if (attempt < maxAttempts) {
-            console.log(`⏳ Retrying in 60 seconds...`);
-            await new Promise((r) => setTimeout(r, 60_000));
-          }
-        }
-      }
+      await jalankanSnapshotDenganRetry(
+        "Excel Snapshot SA",
+        saveDailyExcelSnapshot,
+        "cron:snapshot:once",
+      );
     },
-    {
-      timezone: "Asia/Jakarta",
-      recoverMissedExecutions: true,
-    },
+    DAILY_CRON_OPTS,
   );
+  awasiSlotHilang(tugasSnapshotSA, "Excel Snapshot SA", "cron:snapshot:once");
 
   // 3. Daily Excel Report Sending (Scheduled at 17:00)
   cron.schedule(
@@ -665,40 +774,23 @@ async function main() {
         console.error("Excel Report Sending Cron Error:", e);
       }
     },
-    {
-      timezone: "Asia/Jakarta",
-      recoverMissedExecutions: true,
-    },
+    DAILY_CRON_OPTS,
   );
 
-  // 4. Developer Daily Snapshot (16:05 — offset 2 min after SA snapshot)
-  cron.schedule(
+  // 4. Developer Daily Snapshot — lihat catatan isClientReady di job #2.
+  const tugasSnapshotDev = cron.schedule(
     DEV_REPORT_SCHEDULE,
     async () => {
-      if (!isClientReady) return;
       if (lewatiKalauLibur("Snapshot DEV")) return;
-      let attempt = 0;
-      const maxAttempts = 3;
-      while (attempt < maxAttempts) {
-        attempt++;
-        try {
-          console.log(`⏰ Menjalankan Scheduled DEV Excel Snapshot (attempt ${attempt}/${maxAttempts})...`);
-          await saveDailyExcelSnapshotDev();
-          break;
-        } catch (e) {
-          console.error(`DEV Snapshot Cron Error (attempt ${attempt}):`, e);
-          if (attempt < maxAttempts) {
-            console.log(`⏳ Retrying in 60 seconds...`);
-            await new Promise((r) => setTimeout(r, 60_000));
-          }
-        }
-      }
+      await jalankanSnapshotDenganRetry(
+        "Excel Snapshot DEV",
+        saveDailyExcelSnapshotDev,
+        "cron:snapshot:dev:once",
+      );
     },
-    {
-      timezone: "Asia/Jakarta",
-      recoverMissedExecutions: true,
-    },
+    DAILY_CRON_OPTS,
   );
+  awasiSlotHilang(tugasSnapshotDev, "Excel Snapshot DEV", "cron:snapshot:dev:once");
 
   // 5. Developer Excel Report Sending (17:05)
   cron.schedule(
@@ -716,10 +808,7 @@ async function main() {
         console.error("DEV Excel Report Sending Cron Error:", e);
       }
     },
-    {
-      timezone: "Asia/Jakarta",
-      recoverMissedExecutions: true,
-    },
+    DAILY_CRON_OPTS,
   );
 
   // 6. Plato Top-10 Weekly Report (default Jumat 16:10)
@@ -748,10 +837,7 @@ async function main() {
           }
         }
       },
-      {
-        timezone: "Asia/Jakarta",
-        recoverMissedExecutions: true,
-      },
+      DAILY_CRON_OPTS,
     );
   }
 
@@ -781,10 +867,7 @@ async function main() {
           }
         }
       },
-      {
-        timezone: "Asia/Jakarta",
-        recoverMissedExecutions: true,
-      },
+      DAILY_CRON_OPTS,
     );
   }
 
@@ -805,10 +888,7 @@ async function main() {
           console.error("Status Develop Rekap Cron Error:", e);
         }
       },
-      {
-        timezone: "Asia/Jakarta",
-        recoverMissedExecutions: true,
-      },
+      DAILY_CRON_OPTS,
     );
   }
 }
