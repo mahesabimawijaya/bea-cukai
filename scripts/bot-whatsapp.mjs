@@ -78,6 +78,43 @@ const DAILY_CRON_OPTS = {
 };
 
 /**
+ * Definisi job snapshot harian — satu sumber kebenaran dipakai baik oleh cron
+ * (jalankanSnapshotDenganRetry) maupun tombol retry Telegram, supaya keduanya
+ * tidak pernah bisa saling berbeda soal fungsi mana yang sebenarnya dipanggil.
+ */
+const SNAPSHOT_JOBS = {
+  sa: {
+    label: "Excel Snapshot SA",
+    fn: saveDailyExcelSnapshot,
+    perintahManual: "cron:snapshot:once",
+  },
+  dev: {
+    label: "Excel Snapshot DEV",
+    fn: saveDailyExcelSnapshotDev,
+    perintahManual: "cron:snapshot:dev:once",
+  },
+};
+
+// true selama job itu (fase cepat ATAU fase lambat) masih aktif mencoba —
+// dipakai supaya tap tombol Telegram di tengah retry otomatis tidak memicu
+// percobaan kedua yang tumpang tindih.
+const retryInFlight = { sa: false, dev: false };
+
+const RETRY_BUTTON_LABEL = "🔄 Retry Sekarang";
+
+/** Jam:menit saat ini di WIB — dipakai buat batas fase-lambat berhenti. */
+function jamMenitJakarta() {
+  const wib = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  return { jam: wib.getUTCHours(), menit: wib.getUTCMinutes() };
+}
+
+/** true kalau sudah lewat 23:45 WIB — batas fase-lambat berhenti hari itu. */
+function sudahLewatCutoffLapisLambat() {
+  const { jam, menit } = jamMenitJakarta();
+  return jam === 23 && menit >= 45;
+}
+
+/**
  * Kalau sebuah slot sampai dibuang lagi, harus ada yang tahu SEKARANG — bukan
  * 8 hari kemudian lewat komplain user.
  */
@@ -93,21 +130,31 @@ function awasiSlotHilang(task, label, perintahManual) {
 }
 
 /**
- * Jalankan job snapshot dengan retry, lalu TERIAK ke Telegram kalau tetap gagal.
+ * Jalankan job snapshot dengan retry DUA LAPIS, lalu kasih tombol Telegram
+ * kalau tetap gagal — supaya pulihnya tidak perlu siapa pun login RDP.
  *
- * Dulu kegagalan cuma console.error lalu menyerah diam-diam — dan karena
- * saveDailyExcelSnapshot* menelan semua exception-nya sendiri, loop retry lama
- * sebenarnya tidak pernah mengulang apa pun. Sekarang keduanya melaporkan
- * {dbOk, sheetsOk} sehingga kegagalan parsial (DB masuk, Sheets tidak) ikut
- * ketahuan.
+ * 1. Lapis cepat (tidak berubah dari sebelumnya): 3 percobaan @ 60 detik.
+ *    Cukup untuk blip jaringan sesaat; sukses di sini tetap senyap.
+ * 2. Lapis lambat: kalau lapis cepat habis, kirim SATU alert (dengan tombol
+ *    retry) lalu coba lagi tiap 20 menit sampai batas 23:45 WIB. Ini yang
+ *    bikin gangguan seperti RDP putus dari intranet semalaman (27 Agustus
+ *    2026, ENOTFOUND jira.beacukai.go.id) bisa pulih SENDIRI begitu jaringan
+ *    kembali — tanpa siapa pun perlu tahu, apalagi login RDP.
+ *
+ * Lapis lambat SENGAJA tidak di-await sampai selesai (lihat jalankanLapisLambat)
+ * — kalau di-await, cron ini (dibungkus noOverlap lewat DAILY_CRON_OPTS) akan
+ * dianggap "masih berjalan" berjam-jam dan menahan slot jadwal berikutnya.
  */
-async function jalankanSnapshotDenganRetry(label, fn, perintahManual) {
-  const maxAttempts = 3;
+async function jalankanSnapshotDenganRetry(jobKey) {
+  const { label, fn } = SNAPSHOT_JOBS[jobKey];
+  const maxAttemptsCepat = 3;
   let terakhir = null;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  retryInFlight[jobKey] = true;
+
+  for (let attempt = 1; attempt <= maxAttemptsCepat; attempt++) {
     console.log(
-      `⏰ Menjalankan Scheduled ${label} (attempt ${attempt}/${maxAttempts})...`,
+      `⏰ Menjalankan Scheduled ${label} (attempt ${attempt}/${maxAttemptsCepat})...`,
     );
     try {
       terakhir = await fn();
@@ -115,28 +162,87 @@ async function jalankanSnapshotDenganRetry(label, fn, perintahManual) {
         console.log(
           `✅ ${label} selesai: ${terakhir.rowCount} baris untuk ${terakhir.date}.`,
         );
+        retryInFlight[jobKey] = false;
         return;
       }
     } catch (e) {
       console.error(`${label} Cron Error (attempt ${attempt}):`, e);
       terakhir = { error: e.message };
     }
-    if (attempt < maxAttempts) {
+    if (attempt < maxAttemptsCepat) {
       console.log(`⏳ Retrying in 60 seconds...`);
       await new Promise((r) => setTimeout(r, 60_000));
     }
   }
 
+  // Lapis cepat habis — beri tahu SEKALI dengan tombol, lalu lanjut di
+  // background (fire-and-forget, lihat catatan di jalankanLapisLambat).
   await sendTelegramAlert(
     [
-      `❌ ${label} GAGAL setelah ${maxAttempts} percobaan.`,
+      `⚠️ ${label} masih gagal setelah ${maxAttemptsCepat} percobaan cepat.`,
       `DB: ${terakhir?.dbOk ? "ok" : "GAGAL"} | Sheets: ${terakhir?.sheetsOk ? "ok" : "GAGAL"}`,
       terakhir?.error ? `Error: ${terakhir.error}` : null,
-      `Jalankan manual di RDP: npm run ${perintahManual}`,
+      `Dicoba otomatis lagi tiap 20 menit sampai 23:45 WIB — tidak perlu aksi apa pun.`,
+      `Mau langsung coba sekarang? Tap tombol di bawah.`,
     ]
       .filter(Boolean)
       .join("\n"),
+    [{ text: RETRY_BUTTON_LABEL, callback_data: `retry:${jobKey}` }],
   );
+
+  jalankanLapisLambat(jobKey, terakhir).catch((e) =>
+    console.error(`${label}: lapis-lambat gagal tak terduga:`, e),
+  );
+}
+
+/**
+ * Fase lambat: retry tiap 20 menit sampai berhasil atau lewat 23:45 WIB.
+ * SENGAJA dipanggil TANPA await dari jalankanSnapshotDenganRetry — lihat
+ * catatan di atasnya soal kenapa cron tidak boleh menunggu ini.
+ */
+async function jalankanLapisLambat(jobKey, terakhirDariLapisCepat) {
+  const { label, fn, perintahManual } = SNAPSHOT_JOBS[jobKey];
+  const intervalMs = 20 * 60 * 1000;
+  let terakhir = terakhirDariLapisCepat;
+  let percobaanKe = 0;
+
+  try {
+    while (!sudahLewatCutoffLapisLambat()) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+      percobaanKe++;
+      console.log(`⏰ ${label}: percobaan lapis-lambat ke-${percobaanKe}...`);
+      try {
+        terakhir = await fn();
+        if (terakhir?.dbOk && terakhir?.sheetsOk) {
+          console.log(
+            `✅ ${label} pulih otomatis di lapis-lambat (percobaan ke-${percobaanKe}).`,
+          );
+          await sendTelegramAlert(
+            `✅ ${label} pulih otomatis (percobaan ke-${percobaanKe}) — ${terakhir.rowCount} baris untuk ${terakhir.date}. Tidak perlu aksi apa pun.`,
+          );
+          return;
+        }
+      } catch (e) {
+        console.error(`${label} lapis-lambat error (percobaan ke-${percobaanKe}):`, e);
+        terakhir = { error: e.message };
+      }
+    }
+
+    console.error(`❌ ${label}: lapis-lambat berhenti, batas 23:45 WIB tercapai, masih gagal.`);
+    await sendTelegramAlert(
+      [
+        `❌ ${label} GAGAL — retry otomatis dihentikan (batas 23:45 WIB tercapai).`,
+        `DB: ${terakhir?.dbOk ? "ok" : "GAGAL"} | Sheets: ${terakhir?.sheetsOk ? "ok" : "GAGAL"}`,
+        terakhir?.error ? `Error: ${terakhir.error}` : null,
+        `Tap tombol di bawah begitu jaringan pulih, atau jalankan manual di RDP: npm run ${perintahManual}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      [{ text: RETRY_BUTTON_LABEL, callback_data: `retry:${jobKey}` }],
+    );
+  } finally {
+    retryInFlight[jobKey] = false;
+  }
 }
 
 /**
@@ -175,17 +281,25 @@ let isClientReady = false;
  * Alert via Telegram saat WA client bermasalah — WA sendiri sedang mati jadi
  * tidak bisa dipakai buat notifikasi soal dirinya sendiri. Gagal kirim di sini
  * cuma di-log, jangan sampai bikin proses utama crash.
+ *
+ * `buttons` opsional: array `{text, callback_data}` jadi satu baris tombol
+ * inline di bawah pesan (dipakai alert kegagalan snapshot buat tombol
+ * "Retry Sekarang" — lihat startTelegramCommandListener).
  */
-async function sendTelegramAlert(text) {
+async function sendTelegramAlert(text, buttons) {
   if (!TELE_BOT_TOKEN || !TELE_GROUP_ID) {
     console.warn("⚠️ TELE_BOT_TOKEN/TELE_GROUP_ID belum di-set, alert Telegram dilewati.");
     return;
   }
   try {
+    const body = { chat_id: TELE_GROUP_ID, text };
+    if (buttons?.length) {
+      body.reply_markup = { inline_keyboard: [buttons] };
+    }
     const res = await fetch(`https://api.telegram.org/bot${TELE_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: TELE_GROUP_ID, text }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       console.error("❌ Gagal kirim alert Telegram:", res.status, await res.text());
@@ -213,6 +327,142 @@ async function sendTelegramPhoto(buffer, caption) {
     }
   } catch (e) {
     console.error("❌ Gagal kirim QR ke Telegram:", e.message);
+  }
+}
+
+// ─── Tombol Retry Telegram (menerima pesan masuk) ───────────────────────────
+//
+// Repo ini sebelumnya CUMA bisa mengirim ke Telegram (sendTelegramAlert/
+// sendTelegramPhoto), tidak pernah menerima. Dibangun dari nol pakai fetch
+// mentah ke getUpdates — bukan library `node-telegram-bot-api` yang ada di
+// package.json tapi tidak pernah dipakai — biar konsisten dengan gaya file
+// ini, dan tidak menambah dependency baru.
+//
+// getUpdates dengan timeout=30 itu LONG-POLL: request-nya ditahan di SISI
+// SERVER Telegram, bukan busy-loop di sini. Jadi ini tidak mengulang kelas
+// bug event-loop-blocking yang baru saja diperbaiki di node-cron (lihat
+// MISSED_TOLERANCE_MS di atas) — cuma satu `fetch` async yang idle menunggu.
+
+async function fetchTelegramUpdates({ timeout, offset }) {
+  const params = new URLSearchParams({ timeout: String(timeout) });
+  if (offset !== undefined) params.set("offset", String(offset));
+  const res = await fetch(
+    `https://api.telegram.org/bot${TELE_BOT_TOKEN}/getUpdates?${params.toString()}`,
+  );
+  if (!res.ok) throw new Error(`getUpdates ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(`getUpdates: ${JSON.stringify(data)}`);
+  return data.result || [];
+}
+
+async function answerTelegramCallback(callbackQueryId, text) {
+  try {
+    await fetch(`https://api.telegram.org/bot${TELE_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+    });
+  } catch (e) {
+    console.error("⚠️ Gagal answerCallbackQuery:", e.message);
+  }
+}
+
+/**
+ * Proses satu tap tombol "Retry Sekarang". Kalau job itu masih aktif dicoba
+ * (retryInFlight) — entah lapis cepat atau lapis lambat — jangan jalankan
+ * percobaan kedua yang tumpang tindih, cukup beri tahu apa adanya.
+ */
+async function tanganiUpdateTelegram(update) {
+  const cq = update.callback_query;
+  if (!cq) return; // bukan tap tombol (mis. pesan teks biasa), abaikan
+
+  const chatId = String(cq.message?.chat?.id ?? "");
+  if (chatId !== String(TELE_GROUP_ID)) return; // bukan dari grup yang dipantau
+
+  const match = /^retry:(sa|dev)$/.exec(cq.data || "");
+  if (!match) return;
+  const jobKey = match[1];
+  const { label, fn } = SNAPSHOT_JOBS[jobKey];
+
+  if (retryInFlight[jobKey]) {
+    await answerTelegramCallback(cq.id, "Sudah dicoba otomatis, tunggu sebentar...");
+    await sendTelegramAlert(
+      `ℹ️ ${label} sedang dicoba otomatis (retry berjalan) — tunggu ~20 menit lagi sebelum tap ulang.`,
+    );
+    return;
+  }
+
+  await answerTelegramCallback(cq.id, "Mencoba sekarang...");
+  retryInFlight[jobKey] = true;
+  console.log(`🔘 ${label}: retry dipicu manual dari tombol Telegram.`);
+  try {
+    const hasil = await fn();
+    if (hasil?.dbOk && hasil?.sheetsOk) {
+      await sendTelegramAlert(
+        `✅ ${label} berhasil (manual dari tombol): ${hasil.rowCount} baris untuk ${hasil.date}.`,
+      );
+    } else {
+      await sendTelegramAlert(
+        [
+          `❌ ${label} masih gagal (manual dari tombol).`,
+          `DB: ${hasil?.dbOk ? "ok" : "GAGAL"} | Sheets: ${hasil?.sheetsOk ? "ok" : "GAGAL"}`,
+          hasil?.error ? `Error: ${hasil.error}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        [{ text: RETRY_BUTTON_LABEL, callback_data: `retry:${jobKey}` }],
+      );
+    }
+  } catch (e) {
+    await sendTelegramAlert(`❌ ${label} error saat retry manual: ${e.message}`, [
+      { text: RETRY_BUTTON_LABEL, callback_data: `retry:${jobKey}` },
+    ]);
+  } finally {
+    retryInFlight[jobKey] = false;
+  }
+}
+
+/**
+ * Loop utama listener tombol. Dipanggil TANPA await dari main() (daemon mode
+ * saja) — ini infinite loop, kalau di-await akan menggantung startup cron
+ * yang lain selamanya.
+ */
+async function startTelegramCommandListener() {
+  if (!TELE_BOT_TOKEN || !TELE_GROUP_ID) {
+    console.warn("⚠️ TELE_BOT_TOKEN/TELE_GROUP_ID belum di-set, tombol retry Telegram dilewati.");
+    return;
+  }
+
+  let offset;
+  // Fast-forward: lewati semua update lama SEBELUM proses ini start, supaya
+  // restart PM2 di tengah lapis-lambat tidak memicu ulang tombol yang sudah
+  // pernah di-tap sebelum restart.
+  try {
+    const awal = await fetchTelegramUpdates({ timeout: 0 });
+    const terakhirId = awal.reduce((max, u) => Math.max(max, u.update_id), -1);
+    if (terakhirId >= 0) offset = terakhirId + 1;
+  } catch (e) {
+    console.error("⚠️ Gagal fast-forward offset Telegram, lanjut dari awal:", e.message);
+  }
+
+  console.log("🔘 Listener tombol retry Telegram aktif.");
+
+  while (true) {
+    let updates = [];
+    try {
+      updates = await fetchTelegramUpdates({ timeout: 30, offset });
+    } catch (e) {
+      console.error("⚠️ getUpdates Telegram gagal, coba lagi dalam 5 detik:", e.message);
+      await new Promise((r) => setTimeout(r, 5000));
+      continue;
+    }
+
+    for (const update of updates) {
+      offset = update.update_id + 1;
+      await tanganiUpdateTelegram(update).catch((e) =>
+        console.error("⚠️ Gagal menangani update Telegram:", e.message),
+      );
+    }
   }
 }
 
@@ -715,6 +965,12 @@ async function main() {
   // dijaga watchdog karena prosesnya memang sengaja langsung keluar.
   startHealthCheck();
 
+  // Sengaja TANPA await — ini infinite loop (long-poll getUpdates), kalau
+  // di-await akan menggantung startup semua cron di bawah ini selamanya.
+  startTelegramCommandListener().catch((e) =>
+    console.error("🔴 Listener tombol retry Telegram berhenti tak terduga:", e),
+  );
+
   // 1. SLA Checks (Every 1 Minute)
   cron.schedule(
     "*/1 * * * *",
@@ -747,11 +1003,7 @@ async function main() {
     REPORT_SCHEDULE,
     async () => {
       if (lewatiKalauLibur("Snapshot SA")) return;
-      await jalankanSnapshotDenganRetry(
-        "Excel Snapshot SA",
-        saveDailyExcelSnapshot,
-        "cron:snapshot:once",
-      );
+      await jalankanSnapshotDenganRetry("sa");
     },
     DAILY_CRON_OPTS,
   );
@@ -782,11 +1034,7 @@ async function main() {
     DEV_REPORT_SCHEDULE,
     async () => {
       if (lewatiKalauLibur("Snapshot DEV")) return;
-      await jalankanSnapshotDenganRetry(
-        "Excel Snapshot DEV",
-        saveDailyExcelSnapshotDev,
-        "cron:snapshot:dev:once",
-      );
+      await jalankanSnapshotDenganRetry("dev");
     },
     DAILY_CRON_OPTS,
   );
