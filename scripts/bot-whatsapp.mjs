@@ -28,6 +28,11 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, "../.env") });
 dotenv.config({ path: path.join(__dirname, "../.env.local") });
 
+// Mencegah error unhandled rejection dari Puppeteer/network mematikan proses di Node 22+
+process.on("unhandledRejection", (reason) => {
+  console.warn("⚠️ Unhandled Rejection diabaikan:", reason?.message || reason);
+});
+
 const WA_GROUP_ID = process.env.WA_GROUP_ID;
 const WA_GROUP_ID_BC = process.env.WA_GROUP_ID_BC || WA_GROUP_ID;
 const WA_GROUP_ID_REPORT = process.env.WA_GROUP_ID_REPORT || WA_GROUP_ID;
@@ -271,7 +276,15 @@ const client = new Client({
     dataPath: path.join(__dirname, "../.wwebjs_auth"),
   }),
   puppeteer: {
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-zygote",
+    ],
   },
 });
 
@@ -506,6 +519,10 @@ client.on("authenticated", () => {
   console.log("✅ Terautentikasi dengan sukses!");
 });
 
+client.on("loading_screen", (percent, message) => {
+  console.log(`⏳ Memuat WhatsApp: ${percent}% (${message})`);
+});
+
 client.on("auth_failure", (msg) => {
   console.error("❌ Gagal autentikasi:", msg);
   sendTelegramAlert(
@@ -635,8 +652,26 @@ function startHealthCheck() {
 
 // ─── Message Listener (Webhook-like) ────────────────────────────────────────
 
+const processedMessageIds = new Set();
+let isPlatoRunning = false;
+let isCukaiRunning = false;
+
 client.on("message", async (msg) => {
   if (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_BC || msg.from === WA_GROUP_ID_REPORT) {
+    // Cegah duplikasi pesan jika event 'message' terpanggil lebih dari sekali
+    const msgId = msg.id?._serialized || msg.id?.id;
+    if (msgId) {
+      if (processedMessageIds.has(msgId)) {
+        console.warn(`⚠️ Pesan duplikat terdeteksi (${msgId}), diabaikan.`);
+        return;
+      }
+      processedMessageIds.add(msgId);
+      if (processedMessageIds.size > 200) {
+        const first = processedMessageIds.values().next().value;
+        processedMessageIds.delete(first);
+      }
+    }
+
     const text = msg.body.toLowerCase();
 
     // Cek apakah bot di-mention atau dipanggil pakai "!report"
@@ -712,6 +747,11 @@ client.on("message", async (msg) => {
       msg.from === WA_GROUP_ID_REPORT &&
       (text.includes("top 10 cukai") || text.includes("top-10 cukai"))
     ) {
+      if (isCukaiRunning) {
+        console.warn("⚠️ Top-10 Cukai sedang diproses, request bersamaan diabaikan.");
+        return;
+      }
+      isCukaiRunning = true;
       console.log(
         `💬 Received manual CUKAI Top-10 request from ${msg.author || msg.from}`,
       );
@@ -723,6 +763,8 @@ client.on("message", async (msg) => {
       } catch (e) {
         console.error("Manual Cukai Error:", e);
         await msg.reply(`❌ Gagal generate Top-10 Cukai: ${e.message}`);
+      } finally {
+        isCukaiRunning = false;
       }
       return;
     }
@@ -732,6 +774,11 @@ client.on("message", async (msg) => {
       (msg.from === WA_GROUP_ID || msg.from === WA_GROUP_ID_REPORT) &&
       (text.includes("top 10 plato") || text.includes("top-10 plato"))
     ) {
+      if (isPlatoRunning) {
+        console.warn("⚠️ Top-10 Plato sedang diproses, request bersamaan diabaikan.");
+        return;
+      }
+      isPlatoRunning = true;
       console.log(
         `💬 Received manual PLATO Top-10 request from ${msg.author || msg.from}`,
       );
@@ -743,6 +790,8 @@ client.on("message", async (msg) => {
       } catch (e) {
         console.error("Manual Plato Error:", e);
         await msg.reply(`❌ Gagal generate Top-10 Plato: ${e.message}`);
+      } finally {
+        isPlatoRunning = false;
       }
       return;
     }
@@ -1140,5 +1189,14 @@ async function main() {
     );
   }
 }
+
+async function handleExit() {
+  try {
+    if (client) await client.destroy();
+  } catch {}
+  process.exit(0);
+}
+process.on("SIGINT", handleExit);
+process.on("SIGTERM", handleExit);
 
 main().catch(console.error);
