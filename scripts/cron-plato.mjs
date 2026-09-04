@@ -122,6 +122,17 @@ function getReportRange(days = PLATO_RANGE_DAYS) {
 
 // ─── Plato fetchers ─────────────────────────────────────────────────────────
 
+function formatPercentage(count, total, explicitVal) {
+  if (explicitVal !== undefined && explicitVal !== null && explicitVal !== "") {
+    const num = parseFloat(explicitVal);
+    if (!isNaN(num)) return `${num.toFixed(1)}%`;
+    const str = String(explicitVal).trim();
+    return str.endsWith("%") ? str : `${str}%`;
+  }
+  if (!total || total <= 0) return "0.0%";
+  return `${((count / total) * 100).toFixed(1)}%`;
+}
+
 export async function fetchTop10({ dateFrom, dateTo, pageSize = PLATO_TOP_N }) {
   const params = {
     date_from: dateFrom,
@@ -141,24 +152,88 @@ export async function fetchTop10({ dateFrom, dateTo, pageSize = PLATO_TOP_N }) {
   const data = await platoGet("/top10", params);
 
   // Response Plato pakai snake_case walaupun schema Swagger menampilkan camelCase.
-  const rows = (data?.data || []).map((r) => ({
-    code: r.code,
-    subject: cleanText(r.subject || ""),
-    category: r.category || "",
-    totalTicket: r.total_ticket ?? r.totalTicket ?? 0,
-    totalBugs: r.total_bugs_application ?? r.totalBugsApplication ?? 0,
-    totalHuman: r.total_human_error ?? r.totalHumanError ?? 0,
-    totalInfra: r.total_infra_issue ?? r.totalInfraIssue ?? 0,
-    dailyTrends: r.daily_trends ?? r.dailyTrends ?? [],
-  }));
+  const rows = (data?.data || []).map((r) => {
+    const totalTicket = r.total_ticket ?? r.totalTicket ?? 0;
+    const totalBugs = r.total_bugs_application ?? r.totalBugsApplication ?? 0;
+    const totalHuman = r.total_human_error ?? r.totalHumanError ?? 0;
+    const totalInfra = r.total_infra_issue ?? r.totalInfraIssue ?? 0;
+    const totalOther =
+      r.total_other_issue ??
+      r.totalOtherIssue ??
+      r.total_other ??
+      r.totalOther ??
+      r.total_layer2_issue ??
+      r.total_layer2 ??
+      Math.max(0, totalTicket - (totalBugs + totalHuman + totalInfra));
+
+    return {
+      code: r.code,
+      subject: cleanText(r.subject || ""),
+      category: r.category || "",
+      totalTicket,
+      totalBugs,
+      totalHuman,
+      totalInfra,
+      totalOther,
+      dailyTrends: r.daily_trends ?? r.dailyTrends ?? [],
+    };
+  });
 
   const s = data?.summary || {};
+  const totalBugs = s.total_bugs_application ?? s.totalBugsApplication ?? 0;
+  const totalHuman = s.total_human_error ?? s.totalHumanError ?? 0;
+  const totalInfra = s.total_infra_issue ?? s.totalInfraIssue ?? 0;
+  const totalOther =
+    s.total_other_issue ??
+    s.totalOtherIssue ??
+    s.total_other ??
+    s.totalOther ??
+    s.total_layer2_issue ??
+    s.total_layer2 ??
+    Math.max(
+      0,
+      (s.total_ticket ?? s.totalTicket ?? 0) -
+        (totalBugs + totalHuman + totalInfra),
+    );
+  const totalTicket =
+    s.total_ticket ??
+    s.totalTicket ??
+    s.total ??
+    totalBugs + totalHuman + totalInfra + totalOther;
+
+  const pctBugs = formatPercentage(
+    totalBugs,
+    totalTicket,
+    s.percentage_bugs_application ?? s.pct_bugs_application,
+  );
+  const pctHuman = formatPercentage(
+    totalHuman,
+    totalTicket,
+    s.percentage_human_error ?? s.pct_human_error,
+  );
+  const pctInfra = formatPercentage(
+    totalInfra,
+    totalTicket,
+    s.percentage_infra_issue ?? s.pct_infra_issue,
+  );
+  const pctOther = formatPercentage(
+    totalOther,
+    totalTicket,
+    s.percentage_other_issue ?? s.percentage_layer2_issue ?? s.pct_other_issue,
+  );
+
   return {
     rows,
     summary: {
-      totalBugs: s.total_bugs_application ?? s.totalBugsApplication ?? 0,
-      totalHuman: s.total_human_error ?? s.totalHumanError ?? 0,
-      totalInfra: s.total_infra_issue ?? s.totalInfraIssue ?? 0,
+      totalTicket,
+      totalBugs,
+      totalHuman,
+      totalInfra,
+      totalOther,
+      pctBugs,
+      pctHuman,
+      pctInfra,
+      pctOther,
     },
   };
 }
@@ -714,6 +789,7 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
       totalBugs: platoRow.totalBugs,
       totalHuman: platoRow.totalHuman,
       totalInfra: platoRow.totalInfra,
+      totalOther: platoRow.totalOther,
       dailyTrends: platoRow.dailyTrends,
     });
     // group bisa undefined kalau kode ini tidak punya tiket [BERULANG] yang
@@ -746,7 +822,7 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
   // per SOP). Kegagalan render TIDAK menggagalkan laporan — teks tetap jalan.
   console.log("🖼️  Merender gambar tabel...");
   const [statImage, historyImage] = await Promise.all([
-    renderStatTableImage(rows),
+    renderStatTableImage(rows, summary),
     renderHistoryTableImage(rows),
   ]);
   console.log(

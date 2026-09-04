@@ -72,7 +72,9 @@ const BASE_STYLE = `
   body { margin: 0; padding: 16px; background: #fff; font-family: Arial, Helvetica, sans-serif; }
   table { border-collapse: collapse; background: #fff; }
   th, td { border: 1px solid #d0d7de; padding: 6px 10px; font-size: 13px; white-space: nowrap; }
-  th { background: #4A76A8; color: #fff; font-weight: bold; text-align: center; }
+  th { background: #4A76A8; color: #fff; font-weight: bold; text-align: center; vertical-align: middle; }
+  th.wrap-header { white-space: normal; max-width: 140px; line-height: 1.3; }
+  .pct-header { font-size: 11.5px; font-weight: normal; opacity: 0.95; display: block; margin-top: 2px; }
   td { text-align: center; }
   td.subject { text-align: left; white-space: normal; max-width: 260px; }
   tr:nth-child(even) td { background: #f4f7fb; }
@@ -91,11 +93,61 @@ const BASE_STYLE = `
 
 // ─── Tabel 1: Ticket Solution Statistic ─────────────────────────────────────
 
-export async function renderStatTableImage(rows) {
+export async function renderStatTableImage(rows, summary = null) {
   try {
+    const sumTotal =
+      summary?.totalTicket ||
+      rows.reduce((acc, r) => acc + (r.totalTicket || 0), 0);
+    const sumBugs =
+      summary?.totalBugs ??
+      rows.reduce((acc, r) => acc + (r.totalBugs || 0), 0);
+    const sumHuman =
+      summary?.totalHuman ??
+      rows.reduce((acc, r) => acc + (r.totalHuman || 0), 0);
+    const sumInfra =
+      summary?.totalInfra ??
+      rows.reduce((acc, r) => acc + (r.totalInfra || 0), 0);
+    const sumOther =
+      summary?.totalOther ??
+      rows.reduce(
+        (acc, r) =>
+          acc +
+          (r.totalOther ??
+            Math.max(
+              0,
+              (r.totalTicket || 0) -
+                ((r.totalBugs || 0) +
+                  (r.totalHuman || 0) +
+                  (r.totalInfra || 0)),
+            )),
+        0,
+      );
+
+    const pctBugs =
+      summary?.pctBugs ||
+      (sumTotal > 0 ? `${((sumBugs / sumTotal) * 100).toFixed(1)}%` : "0.0%");
+    const pctHuman =
+      summary?.pctHuman ||
+      (sumTotal > 0 ? `${((sumHuman / sumTotal) * 100).toFixed(1)}%` : "0.0%");
+    const pctInfra =
+      summary?.pctInfra ||
+      (sumTotal > 0 ? `${((sumInfra / sumTotal) * 100).toFixed(1)}%` : "0.0%");
+    const pctOther =
+      summary?.pctOther ||
+      (sumTotal > 0 ? `${((sumOther / sumTotal) * 100).toFixed(1)}%` : "0.0%");
+
     const bodyRows = rows
-      .map(
-        (r, idx) => `
+      .map((r, idx) => {
+        const other =
+          r.totalOther ??
+          Math.max(
+            0,
+            (r.totalTicket || 0) -
+              ((r.totalBugs || 0) +
+                (r.totalHuman || 0) +
+                (r.totalInfra || 0)),
+          );
+        return `
       <tr>
         <td>${idx + 1}</td>
         <td><b>${escapeHtml(r.code)}</b></td>
@@ -104,17 +156,25 @@ export async function renderStatTableImage(rows) {
         <td>${r.totalBugs}</td>
         <td>${r.totalHuman}</td>
         <td>${r.totalInfra}</td>
+        <td>${other}</td>
         <td><b>${r.totalTicket}</b></td>
-      </tr>`,
-      )
+      </tr>`;
+      })
       .join("");
 
     const html = `<!doctype html><html><head><meta charset="utf-8"><style>${BASE_STYLE}</style></head>
     <body>
       <table id="capture">
         <thead><tr>
-          <th>No</th><th>SOP</th><th>Subject</th><th>Category</th>
-          <th>Bugs Aplikasi</th><th>Kesalahan Pengguna</th><th>Gangguan Infra</th><th>Total Ticket</th>
+          <th>No</th>
+          <th>SOP</th>
+          <th>Subject</th>
+          <th>Category</th>
+          <th class="wrap-header">Bugs Aplikasi<span class="pct-header">(${pctBugs})</span></th>
+          <th class="wrap-header">Kesalahan Pengguna<span class="pct-header">(${pctHuman})</span></th>
+          <th class="wrap-header">Gangguan Infra<span class="pct-header">(${pctInfra})</span></th>
+          <th class="wrap-header">Lainnya(Kemungkinan naik ke Layer2)<span class="pct-header">(${pctOther})</span></th>
+          <th>Total Ticket</th>
         </tr></thead>
         <tbody>${bodyRows}</tbody>
       </table>
