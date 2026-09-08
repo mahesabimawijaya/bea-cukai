@@ -10,8 +10,6 @@
  */
 import puppeteer from "puppeteer";
 
-// ─── Date helpers ───────────────────────────────────────────────────────────
-
 const MONTH_NAMES_ID = [
   "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
   "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
@@ -29,7 +27,6 @@ function isWeekend(date) {
   return day === 0 || day === 6;
 }
 
-/** N tanggal berturut-turut berakhir di `endDate`, urutan TERBARU dulu (kiri ke kanan di tabel). */
 function lastNDatesDesc(n, endDate = new Date()) {
   const dates = [];
   for (let i = 0; i < n; i++) {
@@ -46,8 +43,6 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
-
-// ─── Puppeteer render helper ────────────────────────────────────────────────
 
 async function renderHtmlTableToPng(html) {
   const browser = await puppeteer.launch({
@@ -90,8 +85,6 @@ const BASE_STYLE = `
   .medal-2 { background: #A8A8A8; }
   .medal-3 { background: #B08D57; }
 `;
-
-// ─── Tabel 1: Ticket Solution Statistic ─────────────────────────────────────
 
 export async function renderStatTableImage(rows, summary = null) {
   try {
@@ -187,8 +180,6 @@ export async function renderStatTableImage(rows, summary = null) {
   }
 }
 
-// ─── Tabel 1b: Ticket Statistic versi Cukai (sumber dash-tiket) ─────────────
-
 /**
  * dash-tiket tidak punya pemilahan Bugs Aplikasi / Kesalahan Pengguna /
  * Gangguan Infra seperti Plato — dimensi yang tersedia cuma Kantor, Posisi,
@@ -231,8 +222,6 @@ export async function renderCukaiStatTableImage(rows) {
     return null;
   }
 }
-
-// ─── Tabel 2: History Top 10 by SOP and Date ────────────────────────────────
 
 /**
  * Bandingkan total N hari terakhir vs N hari sebelumnya (butuh 2N hari data).

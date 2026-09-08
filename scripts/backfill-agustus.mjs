@@ -1,24 +1,3 @@
-/**
- * Backfill sekali-jalan untuk 13, 14, dan 18 Agustus 2026.
- *
- * Usage:
- *   node scripts/backfill-agustus.mjs --dry-run   # hitung & tampilkan rencana
- *   node scripts/backfill-agustus.mjs             # eksekusi
- *
- * KENAPA ADA: proses wa-bot mati berhari-hari, jadi cron snapshot 16:00/16:05
- * tidak pernah jalan setelah 12 Agustus. Akibatnya DB *dan* kedua spreadsheet
- * sama-sama berhenti di tanggal itu (bukan kasus "Sheets gagal ditulis" — isi
- * Sheets memang cerminan setia DB).
- *
- * Beda dengan backfill-30-juli.mjs: di sana 31 Juli sudah terlanjur ada di
- * bawah, jadi harus menyisip di tengah pakai insertDimension. Di sini SEMUA
- * tanggal target ada SETELAH 12 Agustus (tanggal terakhir di sheet), jadi cukup
- * memakai writeToGoogleSheets* yang sudah ada — murni append, baris lama tidak
- * tersentuh sama sekali. Syaratnya: urutan pemrosesan harus kronologis.
- *
- * 15-16 Agustus akhir pekan, 17 Agustus libur nasional (HUT RI) — dilewati.
- */
-
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
@@ -49,15 +28,6 @@ const authHeader = process.env.JIRA_PAT
       `${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`,
     ).toString("base64")}`;
 
-// ─── Target ──────────────────────────────────────────────────────────────────
-
-/**
- * Urutan WAJIB kronologis: writeToGoogleSheets* selalu append ke baris paling
- * bawah, jadi memproses 18 sebelum 13 akan membuat urutan tanggal kacau.
- *
- * 18 Agustus (hari ini) TIDAK direkonstruksi — dipakai jalur produksi biasa
- * supaya datanya live dan akurat, sama persis dengan yang cron hasilkan.
- */
 const TARGETS = [
   { day: 13, label: "13 Agustus 2026", mode: "reconstruct" },
   { day: 14, label: "14 Agustus 2026", mode: "reconstruct" },
@@ -70,7 +40,8 @@ const SHEETS = [
     spreadsheetId: "114oWjMGLGW52RmLoosNwZycDwgMaFxscO956oAKUMrY",
     sheetTitle: "Logbook SA",
     table: "jira_sa_excel_history",
-    buildRows: (issues, label) => formatExcelRows(groupTasksBySA(issues), label),
+    buildRows: (issues, label) =>
+      formatExcelRows(groupTasksBySA(issues), label),
     write: writeToGoogleSheets,
   },
   {
@@ -84,10 +55,6 @@ const SHEETS = [
   },
 ];
 
-// ─── Rekonstruksi state historis ─────────────────────────────────────────────
-
-// Status yang dianggap "selesai" oleh JQL cron harian. Tiket berstatus ini
-// hanya ikut kalau hari itu memang ada aktivitasnya.
 const TERMINAL_STATUSES = new Set([
   "code review",
   "done",
@@ -96,14 +63,6 @@ const TERMINAL_STATUSES = new Set([
   "invalid",
 ]);
 
-/**
- * Undo semua perubahan status yang terjadi SETELAH targetDate.
- *
- * Catatan penting soal akurasi: HANYA status yang dipulihkan. Field System
- * Analyst (customfield_10613) tidak terekam di changelog Jira sama sekali,
- * jadi kolom PIC memakai nilai HARI INI. Ini keterbatasan yang diterima —
- * tidak ada sumber lain untuk merekonstruksinya.
- */
 function simulateIssueAtDate(issue, targetDate) {
   if (new Date(issue.fields.created) > targetDate) return null; // belum ada
 
@@ -124,12 +83,6 @@ function simulateIssueAtDate(issue, targetDate) {
   return sim;
 }
 
-/**
- * Apakah tiket punya aktivitas pada hari target — meniru `updatedDate >=
- * startOfDay()` di JQL cron. Changelog hanya merekam perubahan field, jadi
- * tiket yang hari itu cuma dikomentari tidak terdeteksi. Efeknya: sedikit
- * lebih sedikit baris dibanding snapshot asli.
- */
 function hadActivityOn(issue, dayStart, dayEnd) {
   const created = new Date(issue.fields.created);
   if (created >= dayStart && created <= dayEnd) return true;
@@ -141,11 +94,6 @@ function hadActivityOn(issue, dayStart, dayEnd) {
   return false;
 }
 
-/**
- * Semesta pencarian: semua tiket yang belum terminal (apapun statusnya
- * sekarang, bisa jadi saat itu masih aktif) + apapun yang tersentuh sejak
- * tanggal paling awal yang kita backfill.
- */
 async function fetchIssuesWithChangelog(sinceIso) {
   const jql = `project = "BUGS26" AND (status NOT IN ("Done", "Closed", "Resolved", "Invalid") OR updated >= "${sinceIso}") ORDER BY created DESC`;
   const all = [];
@@ -188,7 +136,6 @@ async function fetchIssuesWithChangelog(sinceIso) {
   return all;
 }
 
-/** Terapkan time-machine + filter yang sama dengan JQL cron harian. */
 function reconstructActiveIssues(issues, day) {
   const dayStart = new Date(2026, 7, day, 0, 0, 0, 0);
   const dayEnd = new Date(2026, 7, day, 23, 59, 59, 999);
@@ -199,7 +146,10 @@ function reconstructActiveIssues(issues, day) {
     if (!sim) continue;
 
     const status = (sim.fields.status.name || "").toLowerCase().trim();
-    if (TERMINAL_STATUSES.has(status) && !hadActivityOn(issue, dayStart, dayEnd))
+    if (
+      TERMINAL_STATUSES.has(status) &&
+      !hadActivityOn(issue, dayStart, dayEnd)
+    )
       continue;
 
     result.push(sim);
@@ -207,14 +157,6 @@ function reconstructActiveIssues(issues, day) {
   return result;
 }
 
-// ─── Pemeriksaan keamanan sebelum menulis ────────────────────────────────────
-
-/**
- * writeToGoogleSheets* punya perilaku "hapus baris tanggal ini lalu append".
- * Kalau tanggal target ternyata SUDAH ada di tengah sheet, perilaku itu akan
- * menghapus dari situ sampai baris terakhir — merusak data setelahnya. Jadi
- * sebelum menulis apa pun, pastikan tanggal target memang belum ada.
- */
 async function preflightSheet({ spreadsheetId, sheetTitle }, labels) {
   const { GoogleSpreadsheet } = await import("google-spreadsheet");
   const { JWT } = await import("google-auth-library");
@@ -262,8 +204,6 @@ async function preflightSheet({ spreadsheetId, sheetTitle }, labels) {
   };
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
-
 async function main() {
   console.log(
     `\n🔧 Backfill logbook ${IS_DRY_RUN ? "(DRY RUN — tidak menulis apa pun)" : "(EKSEKUSI)"}`,
@@ -301,7 +241,9 @@ async function main() {
   const live = TARGETS.find((t) => t.mode === "live");
 
   if (IS_DRY_RUN) {
-    console.log(`\n📋 DRY RUN selesai. ${live.label} akan diambil live saat eksekusi.`);
+    console.log(
+      `\n📋 DRY RUN selesai. ${live.label} akan diambil live saat eksekusi.`,
+    );
     console.log("   Tidak ada perubahan yang ditulis ke DB maupun Sheets.\n");
     return;
   }

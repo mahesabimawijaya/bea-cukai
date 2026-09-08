@@ -1,13 +1,3 @@
-/**
- * Standalone cron script for sending daily Jira reports to Telegram.
- *
- * Usage:
- *   node scripts/cron-telegram.mjs          # Start scheduler (16:00 WIB, Mon-Fri)
- *   node scripts/cron-telegram.mjs --once   # Run once immediately, then exit
- *
- * This script is self-contained — it does NOT depend on the Next.js server.
- * It reads .env and .env.local from the project root.
- */
 
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
@@ -30,7 +20,6 @@ const TELE_BOT_TOKEN = process.env.TELE_BOT_TOKEN;
 const TELE_GROUP_ID = process.env.TELE_GROUP_ID;
 const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
 
-// Validate required env vars
 const missing = [];
 if (!JIRA_BASE_URL) missing.push("JIRA_BASE_URL");
 if (!JIRA_PAT && (!JIRA_USERNAME || !JIRA_PASSWORD)) {
@@ -73,31 +62,18 @@ function categorizeTask(statusName) {
 // ─── SA Team Filter ──────────────────────────────────────────────────────────
 
 const SA_TEAM_KEYWORDS = [
-  "willy taufik", // Willy Taufik
-  "farisan", // M Farisan
-  "rifqi", // Rifqi Zhafar
-  "ilyas", // M Ilyas
-  "rahmat", // Rahmat Hidayat
-  "nitha", // Nitha Huwaida
-  "auliya", // Auliya Barendra
-  "akbar", // Akbar Maulana Fikri
-  "lalang", // Lalang Indra
-  "sugianto", // Sugianto
-  "laksito", // Laksito
+  "willy taufik",
+  "farisan",
+  "rifqi",
+  "ilyas",
+  "rahmat",
+  "nitha",
+  "auliya",
+  "akbar",
+  "lalang",
+  "sugianto",
+  "laksito",
 ];
-// const SA_TEAM_KEYWORDS = [
-//   // "willy taufik", // Willy Taufik
-//   "farisan", // M Farisan
-//   // "rifqi",       // Rifqi Zhafar
-//   // "ilyas",       // M Ilyas
-//   // "rahmat",      // Rahmat Hidayat
-//   // "nitha",       // Nitha Huwaida
-//   // "auliya",      // Auliya Barendra
-//   // "akbar",       // Akbar Maulana Fikri
-//   // "lalang",      // Lalang Indra
-//   // "sugianto",    // Sugianto
-//   // "laksito",     // Laksito
-// ];
 
 function isSAMember(displayName) {
   if (!displayName) return false;
@@ -105,7 +81,7 @@ function isSAMember(displayName) {
   return SA_TEAM_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
-// ─── Jira API ───────────────────────────────────────────────────────────────
+
 
 async function fetchJiraTasks() {
   const jql = `project = 'BUGS26' AND (status NOT IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') OR (status IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') AND updatedDate >= startOfDay())) ORDER BY assignee ASC, updated DESC`;
@@ -158,7 +134,6 @@ async function fetchJiraTasks() {
     startAt += maxResults;
   }
 
-  // Return all active issues (we'll filter the groups next)
   return allIssues;
 }
 
@@ -242,8 +217,6 @@ function computeStats(issues, groups) {
   return stats;
 }
 
-// ─── Telegram Formatting ────────────────────────────────────────────────────
-
 function escapeHtml(text) {
   return text
     .replace(/&/g, "&amp;")
@@ -313,7 +286,6 @@ function formatDetailMessages(groups) {
 
     if (activeTasks.length === 0) continue;
 
-    // Group tasks by exact status name
     const tasksByStatus = {};
     activeTasks.forEach((t) => {
       const st = t.fields.status.name;
@@ -371,8 +343,6 @@ function formatDetailMessages(groups) {
   return messages;
 }
 
-// ─── Telegram API ───────────────────────────────────────────────────────────
-
 async function sendTelegramMessage(text) {
   const response = await fetch(
     `https://api.telegram.org/bot${TELE_BOT_TOKEN}/sendMessage`,
@@ -396,8 +366,6 @@ async function sendTelegramMessage(text) {
   return response.json();
 }
 
-// ─── Main ───────────────────────────────────────────────────────────────────
-
 async function runReport() {
   const timestamp = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta",
@@ -405,15 +373,12 @@ async function runReport() {
   console.log(`\n🕐 [${timestamp}] Starting daily report...`);
 
   try {
-    // 1. Fetch from Jira
     const issues = await fetchJiraTasks();
     console.log(`✅ Fetched ${issues.length} issues total`);
 
-    // 2. Group by SA team member (customfield_10613)
     const grouped = groupTasksBySA(issues);
     console.log(`👥 Grouped into ${grouped.length} SA member(s)`);
 
-    // 3. Compute stats for SA ONLY
     const saIssueKeys = new Set();
     grouped.forEach((g) => {
       g.whatsDone.forEach((i) => saIssueKeys.add(i.key));
@@ -426,7 +391,6 @@ async function runReport() {
       `📊 Stats: InProgress=${stats.inProgress} | Review=${stats.reviewTesting} | ToDo=${stats.taskToDo}`,
     );
 
-    // 4. Build messages: detail pages only
     const GROUP_BY_APP = process.env.GROUP_BY_APP === "true";
     const { day, date, time } = formatDateTime();
     const allMessages = [];
@@ -438,7 +402,6 @@ async function runReport() {
       const cukaiGrouped = groupTasksBySA(cukaiIssues);
       const nonCukaiGrouped = groupTasksBySA(nonCukaiIssues);
 
-      // Format Cukai
       if (cukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(cukaiGrouped);
         if (msgs.length > 0) {
@@ -447,7 +410,6 @@ async function runReport() {
         }
       }
 
-      // Format Non Cukai
       if (nonCukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(nonCukaiGrouped);
         if (msgs.length > 0) {
@@ -464,7 +426,6 @@ async function runReport() {
     }
     console.log(`📝 Formatted into ${allMessages.length} message(s)`);
 
-    // 5. Send to Telegram
     for (let i = 0; i < allMessages.length; i++) {
       await sendTelegramMessage(allMessages[i]);
       console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
@@ -480,8 +441,6 @@ async function runReport() {
   }
 }
 
-// ─── Entry Point ────────────────────────────────────────────────────────────
-
 const isOnce = process.argv.includes("--once");
 
 if (isOnce) {
@@ -496,7 +455,6 @@ if (isOnce) {
       process.exit(1);
     });
 } else {
-  // Schedule from env, fallback to 16:00 WIB, Monday–Friday
   const schedule = REPORT_SCHEDULE;
 
   console.log("╔══════════════════════════════════════════╗");

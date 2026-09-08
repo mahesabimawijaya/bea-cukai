@@ -27,8 +27,8 @@ async function initDB() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is not set");
   }
-  // Pool + listener 'error' - lihat penjelasan lengkap di cron-sla-whatsapp.mjs.
-  // Tanpa listener, koneksi DB yang putus membunuh seluruh proses.
+  // Pool + listener 'error' wajib ada. Lihat cron-sla-whatsapp.mjs untuk penjelasan
+  // kenapa Pool dan bukan Client, dan kenapa listener 'error' tidak boleh dihilangkan.
   dbClient = new Pool({ connectionString: process.env.DATABASE_URL });
   dbClient.on("error", (err) => {
     console.error("⚠️ Koneksi DB idle bermasalah (Pool akan menggantinya sendiri):", err.message);
@@ -123,7 +123,7 @@ function getStatusStartTime(issue, targetStatus) {
   if (!issue.changelog || !issue.changelog.histories)
     return new Date(issue.fields.created);
 
-  // Search histories from newest to oldest
+
   for (let i = issue.changelog.histories.length - 1; i >= 0; i--) {
     const history = issue.changelog.histories[i];
     for (const item of history.items) {
@@ -144,7 +144,7 @@ function calculateTimeSpentInStatus(issue, statusName) {
   let timeSpentMs = 0;
   let enteredStatusAt = null;
 
-  // Search from oldest to newest to accumulate time spent
+
   for (let i = 0; i < issue.changelog.histories.length; i++) {
     const history = issue.changelog.histories[i];
     for (const item of history.items) {
@@ -167,7 +167,7 @@ function calculateTimeSpentInStatus(issue, statusName) {
     timeSpentMs += new Date().getTime() - enteredStatusAt.getTime();
   }
 
-  return timeSpentMs / (1000 * 60 * 60); // convert to hours
+  return timeSpentMs / (1000 * 60 * 60);
 }
 
 function categorizeTask(statusName) {
@@ -183,7 +183,7 @@ function categorizeTask(statusName) {
   return "other";
 }
 
-// ─── Main Polling ──────────────────────────────────────────────────────────
+
 
 async function runSlaCheck(isFullSla = true) {
   const typeLabel = isFullSla ? "Full SLA" : "New Task";
@@ -258,7 +258,7 @@ async function runSlaCheck(isFullSla = true) {
     const key = issue.key;
     const summary = issue.fields.summary;
     
-    // Check if any SA member is associated with this ticket (Assignee or customfield_10613)
+
     let isSA = false;
     let saNames = [];
 
@@ -284,7 +284,7 @@ async function runSlaCheck(isFullSla = true) {
 
     const assignee = saNames.join(", ");
 
-    // 1. New Todo (within last 24h to avoid old spam, but alert once)
+
     const created = new Date(issue.fields.created);
     const hoursSinceCreated =
       (now.getTime() - created.getTime()) / (1000 * 60 * 60);
@@ -301,7 +301,6 @@ async function runSlaCheck(isFullSla = true) {
     }
 
     if (statusCat === "todo") {
-      // 2. SLA To Do -> In Progress (60 mins)
       if (
         isFullSla &&
         hoursSinceCreated >= 1 &&
@@ -314,8 +313,7 @@ async function runSlaCheck(isFullSla = true) {
         console.log(`Sent SLA_TODO for ${key}`);
       }
     } else if (isFullSla && statusCat === "inprogress") {
-      // 3. SLA In Progress -> Code Review (H-1 Reminder)
-      const complexity = issue.fields.customfield_10619?.value; // SIMPLE, AVG, COMPLEX
+      const complexity = issue.fields.customfield_10619?.value;
       const totalSla = getSLAHours(complexity);
       const inProgressStart = getStatusStartTime(issue, "in progress");
 
@@ -335,7 +333,6 @@ async function runSlaCheck(isFullSla = true) {
         console.log(`Sent H1_INPROGRESS for ${key}`);
       }
     } else if (isFullSla && statusCat === "tasktodo") {
-      // Gentleman Agreement: Task To Do > 3 days (72 hours)
       const hoursInTaskToDo = calculateTimeSpentInStatus(issue, "task to do");
       
       if (hoursInTaskToDo > maxHoursInTaskToDo) {
@@ -347,7 +344,7 @@ async function runSlaCheck(isFullSla = true) {
         hoursInTaskToDo >= 72 &&
         !(await hasAlertBeenSent(key, "TASK_TODO_3DAYS"))
       ) {
-        // Skip explicitly allowed task to do tickets if needed (e.g., Stresstest)
+
         if (!summary.toLowerCase().includes("stresstest")) {
            await sendAlertMessage(
             `🔔 *Reminder (Gentleman Agreement)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n\nTiket ini sudah berada di antrian *Task To Do* lebih dari 3 hari. Mohon diproses dan ubah status ke _To Do_ lalu _In Progress_ jika sudah dikerjakan.`,
@@ -357,7 +354,6 @@ async function runSlaCheck(isFullSla = true) {
         }
       }
     } else if (isFullSla && rawStatus.includes("revisi")) {
-      // 4. Revisi (Sisa waktu = SLA - waktu terpakai In Progress)
       if (!(await hasAlertBeenSent(key, "REVISI_ENTER"))) {
         const complexity = issue.fields.customfield_10619?.value;
         const totalSla = getSLAHours(complexity);

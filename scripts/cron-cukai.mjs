@@ -1,24 +1,3 @@
-/**
- * Laporan Top-10 Cukai — permintaan Mang Andrian: "top 10 khusus gangguan
- * aplikasi dan modulnya cukai", formatnya mengikuti laporan Top-10 Plato.
- *
- * Sumber datanya BUKAN Plato, tapi dash-tiket (lihat dash-tiket-client.mjs):
- * Plato tidak mengenal Cukai sama sekali (application filter-nya cuma all /
- * Zimbra / DBCUSTOMER / RSAT / CEISA 3.0 / CEISA 4.0).
- *
- * Karena taksonominya beda, ada 2 bagian yang tidak bisa 1:1 dengan Plato:
- *  - "Summary Issue" tidak punya pemilahan Bugs/Human/Infra → diganti Total +
- *    kantor penyumbang terbanyak.
- *  - Kategori Cukai tidak punya kode SOP, jadi kunci join ke Jira bukan kode
- *    SOP melainkan KODE DOKUMEN cukai (CK-1, CK-5, ...) — lihat bagian Jira
- *    di bawah. "Permasalahan" tetap dari uraian tiket asli pelapor, sedangkan
- *    "Analisa"/"Perbaikan"/"Tiket Penyelesaian" dari Jira dan hanya muncul
- *    kalau memang ada tiket yang cocok (tanpa placeholder kosong).
- *
- * Tidak ada baris cc di laporan ini: satu kode dokumen bisa punya puluhan
- * tiket (CK-5 ada 127) yang sebagian sudah Done berbulan lalu, jadi mention
- * otomatis berisiko menyasar orang untuk isu yang sudah selesai.
- */
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -33,9 +12,6 @@ import {
   renderCukaiStatTableImage,
   renderHistoryTableImage,
 } from "./plato-image.mjs";
-// Helper format dipinjam dari laporan Plato supaya dua laporan ini dijamin
-// tampil identik (pembatas, pembersih teks, pemilih uraian, baris history) —
-// bukan salinan yang lama-lama bisa menyimpang.
 import {
   SECTION_DIVIDER,
   cleanText,
@@ -52,14 +28,8 @@ const PROJECT_ROOT = path.join(
 
 const CUKAI_TOP_N = Number(process.env.CUKAI_TOP_N || 10);
 const CUKAI_RANGE_DAYS = Number(process.env.CUKAI_RANGE_DAYS || 7);
-// Panah tren di tabel history membandingkan N hari terakhir vs N hari
-// sebelumnya, jadi datanya perlu 2x lebar jendela laporan.
 const TREND_RANGE_DAYS = CUKAI_RANGE_DAYS * 2;
-// Uraian tiket ditulis bebas oleh pelapor dan bisa sangat panjang — dipotong
-// supaya satu item laporan tetap terbaca di WA.
 const URAIAN_MAX_CHARS = 220;
-
-// ─── Date helpers ───────────────────────────────────────────────────────────
 
 function toApiDate(date) {
   const y = date.getFullYear();
@@ -68,7 +38,6 @@ function toApiDate(date) {
   return `${y}-${m}-${d}`;
 }
 
-/** Rentang N hari terakhir termasuk hari ini — pola yang sama dengan Plato. */
 function getReportRange(days = CUKAI_RANGE_DAYS) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -79,51 +48,25 @@ function getReportRange(days = CUKAI_RANGE_DAYS) {
   return { dateFrom: toApiDate(from), dateTo: toApiDate(today) };
 }
 
-// ─── Jira: sumber "cara solving" per kategori ───────────────────────────────
-//
-// Permintaan Mang Andrian: "yg cukai ada ga ya issue log nya di jira? kalau
-// ada bisa tuh ambil cara solving nya". Ada — 536 tiket BUGS26 ber-Aplikasi
-// Cukai, 423 di antaranya (79%) memakai template Permasalahan/Analisa/
-// Perbaikan yang sama dengan tiket [BERULANG], jadi bisa dipakai apa adanya.
-//
-// Bedanya dengan laporan Plato: di sana kuncinya kode SOP yang memang ditulis
-// eksplisit di deskripsi tiket. Di sini tidak ada kode SOP, jadi joinnya lewat
-// KODE DOKUMEN cukai (CK-1, CK-5, LACK-1, P3C, PBCK-3, ...) yang muncul di
-// summary tiket Jira.
-
-/** "CK-1" / "ck 1" / "ck1" → "CK1", supaya penulisan dev yang tidak konsisten tetap ketemu. */
 function normCode(s) {
   return String(s || "")
     .toUpperCase()
     .replace(/[\s\-_.]/g, "");
 }
 
-// Kode dokumen di summary Jira: P3C, atau 2-4 huruf + 1-2 angka + opsional
-// huruf varian (CK-4A, CK-1C). Pemisahnya boleh spasi/hyphen/tidak ada.
 const DOC_CODE_RE = /\b(P3C|[A-Z]{2,4}\s*-?\s*\d{1,2}[A-Za-z]?)\b/gi;
 
 function docCodesOf(text) {
-  return [...new Set((String(text || "").match(DOC_CODE_RE) || []).map(normCode))];
+  return [
+    ...new Set((String(text || "").match(DOC_CODE_RE) || []).map(normCode)),
+  ];
 }
 
-/**
- * Kode "keluarga": buang huruf varian di akhir (CK4C → CK4).
- *
- * Dibutuhkan karena dev menulis tiket CK-4 secara generik ("CK4", 39 tiket)
- * dan TIDAK PERNAH memakai sufiks A/B/C, padahal dash-tiket memisahkan
- * CK-4A (Etil Alkohol), CK-4B (MMEA), dan CK-4C (Hasil Tembakau). Tanpa ini
- * ketiganya tidak akan pernah dapat tiket Jira sama sekali.
- *
- * Hanya dipakai sebagai CADANGAN saat exact match kosong, supaya kode yang
- * sudah punya tiket spesifik (mis. CK-1A) tidak tertimpa tiket generik.
- * Hasil potongan yang jadi terlalu pendek (P3C → P3) ditolak — itu bukan kode.
- */
 function familyCode(code) {
   const fam = code.replace(/[A-Z]$/, "");
   return fam !== code && fam.length >= 3 && /\d/.test(fam) ? fam : null;
 }
 
-/** Ambil semua tiket BUGS26 dengan field Aplikasi = "Cukai". */
 async function fetchCukaiBugs() {
   const jql =
     "project = 'BUGS26' AND status != 'Invalid' AND cf[10616] = 'Cukai' ORDER BY updated DESC";
@@ -157,10 +100,6 @@ async function fetchCukaiBugs() {
   return all;
 }
 
-/**
- * Index tiket Jira per kode dokumen. Urutan dalam tiap bucket mengikuti
- * urutan fetch (updated DESC), jadi tiket paling baru di-update ada di depan.
- */
 function indexBugsByDocCode(issues) {
   const byCode = new Map();
   for (const issue of issues) {
@@ -169,7 +108,9 @@ function indexBugsByDocCode(issues) {
       byCode.get(code).push({
         key: issue.key,
         status: issue.fields.status?.name || "",
-        summary: (issue.fields.summary || "").replace(/\s*\r?\n\s*/g, " ").trim(),
+        summary: (issue.fields.summary || "")
+          .replace(/\s*\r?\n\s*/g, " ")
+          .trim(),
         desc: issue.fields.description || "",
       });
     }
@@ -177,11 +118,6 @@ function indexBugsByDocCode(issues) {
   return byCode;
 }
 
-/**
- * Cari tiket Jira untuk satu kode kategori dash-tiket. Kembalikan juga
- * `isFamily` supaya laporan bisa jujur bahwa tiketnya dari keluarga kode yang
- * lebih umum, bukan spesifik varian tersebut.
- */
 function lookupBugs(byCode, code) {
   const n = normCode(code);
   const exact = byCode.get(n);
@@ -194,7 +130,6 @@ function lookupBugs(byCode, code) {
   return { issues: [], isFamily: false };
 }
 
-/** Analisa/Perbaikan diambil dari tiket PERTAMA yang benar-benar mengisinya. */
 function pickSections(issues) {
   for (const issue of issues) {
     const s = extractStructuredSections(issue.desc);
@@ -202,8 +137,6 @@ function pickSections(issues) {
   }
   return { permasalahan: "", analisa: "", perbaikan: "" };
 }
-
-// ─── Formatting ─────────────────────────────────────────────────────────────
 
 function shorten(s, max = URAIAN_MAX_CHARS) {
   const t = cleanText(s);
@@ -249,9 +182,6 @@ export function formatCukaiReport({ rows, details, dateFrom, dateTo }) {
     }
     parts.push("");
 
-    // Section Jira cuma muncul kalau ada tiket yang benar-benar cocok — tidak
-    // ada placeholder kosong, karena sebagian kategori (mis. "Cukai - Lainnya")
-    // memang tidak punya kode dokumen untuk dijadikan kunci join.
     const famNote = d.isFamily ? ` _(dari tiket ${d.familyOf} umum)_` : "";
     if (d.analisa) {
       parts.push(`*Analisa :*${famNote}`);
@@ -283,12 +213,6 @@ export function formatCukaiReport({ rows, details, dateFrom, dateTo }) {
   return parts.join("\n");
 }
 
-// ─── Orchestrator ───────────────────────────────────────────────────────────
-
-/**
- * Generate laporan Top-10 Cukai. Kembalikan teksnya; kirim ke WA kalau
- * `sendMessage` diberikan.
- */
 export async function runCukaiReport(sendMessage = null, isDebug = false) {
   const { dateFrom, dateTo } = getReportRange();
   const trendRange = getReportRange(TREND_RANGE_DAYS);
@@ -299,8 +223,6 @@ export async function runCukaiReport(sendMessage = null, isDebug = false) {
   console.log("🔐 Login ke dash-tiket...");
   const cookie = await login();
 
-  // Tiket Jira di-fetch SEKALI di depan lalu di-index, bukan di-query per
-  // kategori — 536 tiket muat di memori dan jauh lebih murah dari 10x search.
   console.log("🔎 Mengambil tiket BUGS26 ber-Aplikasi Cukai...");
   let bugsByCode = new Map();
   try {
@@ -310,8 +232,6 @@ export async function runCukaiReport(sendMessage = null, isDebug = false) {
       `✅ ${cukaiBugs.length} tiket Cukai, ${bugsByCode.size} kode dokumen ter-index.`,
     );
   } catch (e) {
-    // Jira mati tidak boleh menggagalkan laporan — statistik dash-tiket tetap
-    // berguna sendiri, cuma section "cara solving"-nya yang hilang.
     console.warn(`⚠️ Gagal ambil tiket Jira Cukai: ${e.message}`);
   }
 
@@ -323,11 +243,12 @@ export async function runCukaiReport(sendMessage = null, isDebug = false) {
   );
 
   if (!cukai.length) {
-    console.log("⚠️ Tidak ada kategori Cukai di periode ini. Report dibatalkan.");
+    console.log(
+      "⚠️ Tidak ada kategori Cukai di periode ini. Report dibatalkan.",
+    );
     return null;
   }
 
-  // kategoriList dari API sudah urut menurun by jumlah, tidak perlu sort ulang.
   const selected = cukai.slice(0, CUKAI_TOP_N);
 
   const rows = [];
@@ -340,8 +261,6 @@ export async function runCukaiReport(sendMessage = null, isDebug = false) {
       { dateFrom, dateTo },
       cookie,
     );
-    // Panggilan kedua khusus untuk tren: butuh jendela 2x lebih lebar supaya
-    // panah naik/turun di tabel history punya pembanding.
     const trend = await fetchKategoriDetail(k.kategori, trendRange, cookie);
 
     rows.push({

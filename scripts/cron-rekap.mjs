@@ -101,10 +101,9 @@ function generateReportText(rows, summaryText = "") {
     parts.push("");
   }
   
-  // Group by age
   const groupedByAge = {};
   for (const row of Object.values(rows)) {
-    if (row.Age <= 1) continue; // Skip 1 hari kerja (atau 0)
+    if (row.Age <= 1) continue;
     if (!groupedByAge[row.Age]) groupedByAge[row.Age] = [];
     groupedByAge[row.Age].push(row);
   }
@@ -132,13 +131,11 @@ function generateReportText(rows, summaryText = "") {
   return parts.join("\n").trim() + "\n\nDemikian update dari kami. Terima kasih\n";
 }
 
-// Untuk Auto-API, kita fetch tiket yang aktif
 export async function generateRekapFromAPI() {
   const authHeader = process.env.JIRA_PAT
     ? `Bearer ${process.env.JIRA_PAT}`
     : `Basic ${Buffer.from(`${process.env.JIRA_USERNAME}:${process.env.JIRA_PASSWORD}`).toString("base64")}`;
 
-  // 1. Fetch All Status Summary
   let allStartAt = 0;
   const statusCounts = {};
   let totalAll = 0;
@@ -208,7 +205,6 @@ export async function generateRekapFromAPI() {
   summaryParts.push(`Total : ${totalAll} (100%)`);
   const summaryText = summaryParts.join("\n");
 
-  // 2. Fetch Issues for Aging Report
   const jql = `project = 'BUGS26' AND status IN ('Deploy Production', 'QC BC - Testing Staging', 'DEPLOY DEVELOPMENT', 'Code Review')`;
   const allIssues = [];
   let startAt = 0;
@@ -245,9 +241,8 @@ export async function generateRekapFromAPI() {
     const stName = (issue.fields.status.name || "").toLowerCase();
 
     if (stName === "deploy production") {
-      // 1. Deploy Prod tanpa PIC
+      // Deploy Prod tidak ada PIC (empty set)
     } else if (stName === "qc bc - testing staging") {
-      // 2. QC BC Testing staging PIC ambil dari kolom petugas QC
       const qcField = issue.fields.customfield_10662;
       if (Array.isArray(qcField)) {
         qcField.forEach(u => allPics.add(u.displayName || u.name));
@@ -255,7 +250,6 @@ export async function generateRekapFromAPI() {
         allPics.add(qcField.displayName || qcField.name);
       }
     } else {
-      // 3. Sisa nya ambil dari kolom SA tp untuk BC aja
       const saField = issue.fields.customfield_10613 || [];
       const saNames = saField.map(u => u.displayName || u.name);
       saNames.forEach(n => allPics.add(n));
@@ -300,8 +294,6 @@ export async function generateRekapFromAPI() {
 }
 
 export async function generateRekapFromCSV(csvBuffer) {
-  // Since CSV doesn't easily provide changelog dates, we just fallback to 1 hari kerja
-  // This function is kept for backward compatibility if someone uploads a CSV
   const records = parse(csvBuffer, {
     columns: true,
     skip_empty_lines: true,

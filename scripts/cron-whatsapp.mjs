@@ -1,13 +1,3 @@
-/**
- * Standalone cron script for sending daily Jira reports to WhatsApp.
- *
- * Usage:
- *   node scripts/cron-whatsapp.mjs          # Start scheduler (16:00 WIB, Mon-Fri)
- *   node scripts/cron-whatsapp.mjs --once   # Run once immediately, then exit
- *
- * Note: On first run, it will display a QR code in the terminal.
- * Scan it with your WhatsApp app. The session will be saved locally.
- */
 
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
@@ -19,8 +9,6 @@ import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import { dbClient } from "./cron-sla-whatsapp.mjs";
 
-// ─── Load Environment ───────────────────────────────────────────────────────
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
 
@@ -31,11 +19,10 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
 const JIRA_USERNAME = process.env.JIRA_USERNAME;
 const JIRA_PASSWORD = process.env.JIRA_PASSWORD;
 const JIRA_PAT = process.env.JIRA_PAT;
-const WA_GROUP_ID = process.env.WA_GROUP_ID || process.env.TELE_GROUP_ID; // Fallback to TELE_GROUP_ID if WA_GROUP_ID is missing
+const WA_GROUP_ID = process.env.WA_GROUP_ID || process.env.TELE_GROUP_ID;
 const FONNTE_TOKEN = process.env.FONNTE_TOKEN;
 const REPORT_SCHEDULE = process.env.REPORT_SCHEDULE || "0 16 * * 1-5";
 
-// Validate required env vars
 const missing = [];
 if (!JIRA_BASE_URL) missing.push("JIRA_BASE_URL");
 if (!JIRA_PAT && (!JIRA_USERNAME || !JIRA_PASSWORD)) {
@@ -53,10 +40,6 @@ if (missing.length > 0) {
   );
   process.exit(1);
 }
-
-// Fonnte does not require initialization like Puppeteer.
-
-// ─── Retry Utility ──────────────────────────────────────────────────────────
 
 /**
  * Error yang layak di-retry: gangguan jaringan/soket sesaat, rate limit (429),
@@ -94,17 +77,6 @@ function isRetryableError(err) {
   );
 }
 
-/**
- * Jalankan `fn` dengan retry + exponential backoff berjitter.
- *
- * Aman untuk sinkronisasi Google Sheets karena writeToGoogleSheets* selalu
- * memindai ulang sheet dan menghapus baris tanggal hari ini sebelum menulis —
- * percobaan yang gagal di tengah jalan tidak meninggalkan baris ganda.
- *
- * Backoff-nya sengaja panjang (5s → 10s → 20s): kegagalan di sini biasanya
- * karena server lagi kehabisan memori/IO, jadi retry cepat malah menambah
- * beban di saat yang salah.
- */
 export async function withRetry(
   fn,
   { label = "Operasi", maxAttempts = 4, baseDelayMs = 5000 } = {},
@@ -133,8 +105,6 @@ export async function withRetry(
   }
 }
 
-// ─── Status Categorization ──────────────────────────────────────────────────
-
 const WHATS_NEXT_STATUSES = new Set([
   "in progress",
   "task to do",
@@ -152,8 +122,6 @@ const WHATS_NEXT_STATUSES = new Set([
 function categorizeTask(statusName) {
   return "next";
 }
-
-// ─── SA Team Filter ──────────────────────────────────────────────────────────
 
 const SA_WA_NUMBERS = {
   "willy taufik": "6281290219036",
@@ -186,8 +154,6 @@ function formatAssigneeDisplay(name) {
   }
   return name;
 }
-
-// ─── Jira API ───────────────────────────────────────────────────────────────
 
 async function fetchJiraTasks() {
   const jql = `project = 'BUGS26' AND (status NOT IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') OR (status IN ('Code Review', 'Done', 'Closed', 'Resolved', 'Invalid') AND updatedDate >= startOfDay())) ORDER BY assignee ASC, updated DESC`;
@@ -244,8 +210,6 @@ async function fetchJiraTasks() {
   return allIssues;
 }
 
-// ─── Grouping by SA ─────────────────────────────────────────────────────────
-
 function groupTasksBySA(issues) {
   const grouped = new Map();
 
@@ -285,8 +249,6 @@ function groupTasksBySA(issues) {
   );
 }
 
-// ─── Stats ──────────────────────────────────────────────────────────────────
-
 function classifyStatus(statusName) {
   const s = statusName.toLowerCase().trim();
   if (["done", "closed", "deploy production", "invalid"].includes(s))
@@ -324,8 +286,6 @@ function computeStats(issues, groups) {
   }
   return stats;
 }
-
-// ─── WhatsApp Formatting ────────────────────────────────────────────────────
 
 function escapeWhatsApp(text) {
   return text.replace(/\*/g, "").replace(/_/g, "").replace(/```/g, "");
@@ -412,7 +372,6 @@ function formatDetailMessages(groups) {
   const SPLIT_MESSAGES = process.env.SPLIT_MESSAGES === "true";
   const MAX_LEN = 4000;
 
-  // Compute Overall Summary
   const overallTasksByStatus = {};
   for (const group of groups) {
     const allTasks = [...group.whatsNext, ...group.whatsDone];
@@ -545,14 +504,6 @@ function formatExcelRows(grouped, dateStr) {
 
 export { groupTasksBySA, formatExcelRows, writeToGoogleSheets };
 
-/**
- * Kembalikan status per-tujuan, JANGAN cuma menelan error.
- *
- * Dulu fungsi ini selalu return undefined apapun yang terjadi — DB timeout,
- * kredensial Google hilang, Sheets ditolak — semuanya cuma jadi baris log yang
- * tidak ada yang baca. Akibatnya logbook bisa kosong berhari-hari tanpa ada yang
- * sadar (19-26 Agustus 2026). Sekarang pemanggilnya bisa tahu dan mengirim alert.
- */
 export async function saveDailyExcelSnapshot() {
   const timestamp = new Date().toLocaleString("id-ID", {
     timeZone: "Asia/Jakarta",
@@ -568,13 +519,6 @@ export async function saveDailyExcelSnapshot() {
     hasil.date = date;
     hasil.rowCount = rows.length;
 
-    // DB dan Sheets sengaja DIPISAH total: keduanya tujuan yang berdiri
-    // sendiri, jadi kegagalan salah satu tidak boleh membatalkan yang lain.
-    //
-    // Sebelumnya blok DB ini `return` saat dbClient kosong (dan error query-nya
-    // lolos ke catch luar), sehingga setiap kali DB timeout — yang terbukti
-    // sering terjadi di server ini — Sheets ikut terlewat tanpa ada yang sadar.
-    // Itu penyebab logbook mandek sejak 12 Agustus 2026.
     if (!dbClient) {
       console.warn("⚠️ dbClient is not initialized! Snapshot DB dilewati.");
     } else {
@@ -596,14 +540,10 @@ export async function saveDailyExcelSnapshot() {
       }
     }
 
-    // Google Sheets Integration — kegagalan Sheets (setelah semua retry) juga
-    // tidak menggagalkan job ini. Data bisa disusulkan lewat re-run karena
-    // penulisannya idempoten.
     try {
       const status = await writeToGoogleSheets(rows, date);
       hasil.sheetsOk = status === "written";
       if (!hasil.sheetsOk) {
-        // Bukan exception, tapi spreadsheet tetap TIDAK terisi — harus ketahuan.
         hasil.error = `Google Sheets dilewati (${status})`;
         console.warn(`⚠️ Google Sheets (SA) tidak ditulis untuk ${date}: ${status}`);
       }
@@ -621,11 +561,6 @@ export async function saveDailyExcelSnapshot() {
   return hasil;
 }
 
-/**
- * Wrapper ber-retry. Sengaja dibungkus di sini (bukan di call site) supaya
- * semua pemanggil — cron harian maupun seed-excel.mjs — dapat proteksi yang
- * sama tanpa perlu tahu soal retry.
- */
 async function writeToGoogleSheets(currentRows, date) {
   return withRetry(() => writeToGoogleSheetsOnce(currentRows, date), {
     label: `Sinkronisasi Google Sheets 'Logbook SA' (${date})`,
@@ -657,26 +592,20 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
   const sheet = doc.sheetsByTitle["Logbook SA"];
   if (!sheet) throw new Error(`Sheet 'Logbook SA' not found in the spreadsheet!`);
 
-  // Data starts at row index 8 (row 9 in sheet, after 2-row header block at rows 7-8)
   const DATA_START_ROW = 8;
 
-  // ── Step 1: Scan to detect sheet state ────────────────────────────────────
-  // Column A is merged per date-group so only the top-left cell of each group
-  // has a value after merge. Column C (ticket key) is never merged → use it
-  // to reliably find the last data row.
   const scanRowCount = Math.max(sheet.rowCount, DATA_START_ROW + 10);
   await sheet.loadCells(`A1:C${scanRowCount}`);
 
   const hasHeaders = sheet.getCellByA1('A7').value === 'Date';
 
-  // Last data row via column C (never merged)
+  // Column C (ticket key) tidak pernah di-merge, makanya dipakai untuk menentukan
+  // last data row — Column A di-merge per tanggal sehingga hanya sel pertama berisi nilai.
   let lastDataRowIndex = DATA_START_ROW - 1;
   for (let r = DATA_START_ROW; r < scanRowCount; r++) {
     if (sheet.getCell(r, 2).value) lastDataRowIndex = r;
   }
 
-  // Today's rows: find first occurrence of date in col A (top-left of merge group)
-  // then extend to lastDataRowIndex (today is always the last date group)
   let todayRowIndices = [];
   for (let r = DATA_START_ROW; r <= lastDataRowIndex; r++) {
     if (sheet.getCell(r, 0).value === date) {
@@ -688,7 +617,6 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
     }
   }
 
-  // ── Step 2: Delete today's rows if re-running same day ────────────────────
   if (todayRowIndices.length > 0) {
     const deleteStart = todayRowIndices[0];
     const deleteEnd = todayRowIndices[todayRowIndices.length - 1] + 1;
@@ -700,27 +628,24 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
       }
     }]);
     lastDataRowIndex -= todayRowIndices.length;
-    await doc.loadInfo(); // refresh sheet metadata after row deletion
+    await doc.loadInfo();
   }
 
-  // ── Step 3: Expand sheet if needed ───────────────────────────────────────
   const appendStart = lastDataRowIndex + 1;
   const requiredRows = appendStart + currentRows.length + 5;
   if (sheet.rowCount < requiredRows) {
     await sheet.resize({ rowCount: requiredRows + 20, columnCount: 6 });
   }
 
-  // ── Step 4: Load cells for writing ────────────────────────────────────────
-  // Only load the rows we're about to write — loading previous days' merged
-  // cells causes the library to dirty them, which makes saveUpdatedCells()
-  // conflict with existing merges.
+  // Hanya load range yang mau ditulis — load range yang mencakup baris sebelumnya
+  // yang sudah di-merge menyebabkan library menandainya dirty, lalu saveUpdatedCells()
+  // konflik dengan merge yang sudah ada.
   if (!hasHeaders) {
     await sheet.loadCells(`A1:F${appendStart + currentRows.length + 2}`);
   } else {
     await sheet.loadCells(`A${appendStart + 1}:F${appendStart + currentRows.length + 2}`);
   }
 
-  // Write static header block only on first run
   if (!hasHeaders) {
     console.log(`✍️ Writing header block (first time)...`);
 
@@ -758,10 +683,8 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
     }
   }
 
-  // ── Step 5: Append today's rows ───────────────────────────────────────────
   console.log(`✍️ Appending ${currentRows.length} rows for ${date} at row ${appendStart + 1}...`);
 
-  // Track PIC groups for merge calculation
   const picGroups = [];
   let currentPicGroup = null;
   let writeRow = appendStart;
@@ -796,21 +719,18 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
 
   await sheet.saveUpdatedCells();
 
-  // ── Step 6: Apply merges only for today's new rows ────────────────────────
   const mergeRequests = [];
 
-  // One-time header merges
   if (!hasHeaders) {
     mergeRequests.push(
-      { startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 },  // B1:E2 title
-      { startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 },  // B3:E3 subtitle
-      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 },  // A7:A8 Date header
-      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 },  // B7:B8 PIC header
-      { startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 },  // C7:F7 Activity header
+      { startRowIndex: 0, endRowIndex: 2, startColumnIndex: 1, endColumnIndex: 5 },
+      { startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 5 },
+      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 1 },
+      { startRowIndex: 6, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 },
+      { startRowIndex: 6, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 6 },
     );
   }
 
-  // Date column merge (all of today's rows share the same date)
   if (currentRows.length > 1) {
     mergeRequests.push({
       startRowIndex: appendStart,
@@ -820,7 +740,6 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
     });
   }
 
-  // PIC column merges (per PIC group within today)
   for (const group of picGroups) {
     if (group.count > 1) {
       mergeRequests.push({
@@ -848,8 +767,6 @@ async function writeToGoogleSheetsOnce(currentRows, date) {
   console.log(`✅ Appended ${currentRows.length} rows for ${date} to Google Sheet 'Logbook SA'.`);
   return "written";
 }
-
-// ─── Main ───────────────────────────────────────────────────────────────────
 
 export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebug = false) {
   const timestamp = new Date().toLocaleString("id-ID", {
@@ -891,7 +808,6 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
       const cukaiGrouped = groupTasksBySA(cukaiIssues);
       const nonCukaiGrouped = groupTasksBySA(nonCukaiIssues);
 
-      // Format Cukai
       if (cukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(cukaiGrouped);
         if (msgs.length > 0) {
@@ -902,7 +818,6 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
         }
       }
 
-      // Format Non Cukai
       if (nonCukaiGrouped.length > 0) {
         const msgs = formatDetailMessages(nonCukaiGrouped);
         if (msgs.length > 0) {
@@ -928,10 +843,8 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
         "\n\nDemikian update dari kami. Terima kasih";
     }
 
-    // --- Excel Generation Logic with exceljs ---
     let excelMedia = null;
     
-    // Only generate Excel if we have sendInternalMessage
     if (sendInternalMessage) {
       const { date } = formatDateTime();
       const currentRows = formatExcelRows(grouped, date);
@@ -941,7 +854,6 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
         try {
           const res = await dbClient.query(`SELECT snapshot_date, rows_data FROM jira_sa_excel_history ORDER BY id ASC`);
           for (const row of res.rows) {
-            // Avoid adding today's live data twice if it's already in the DB
             if (row.snapshot_date !== date) {
               allHistoricalRows = allHistoricalRows.concat(row.rows_data);
             }
@@ -957,21 +869,18 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
         const workbook = new ExcelJS.Workbook();
         const sheet = workbook.addWorksheet("Daily Report SA");
 
-        // 1. row 1:2 B:E diisi dengan title "LogBook PT. Altros Technology", bold, align center arial dengan ukuran 12
         sheet.mergeCells("B1:E2");
         const titleCell = sheet.getCell("B1");
         titleCell.value = "LogBook PT. Altros Technology";
         titleCell.font = { name: "Arial", size: 12, bold: true };
         titleCell.alignment = { vertical: "middle", horizontal: "center" };
 
-        // 2. row 3 B:E diisi dengan subtitle "Project : BC - Ceisa 4.0 Th 2026", bold align center arial dengan ukuran 10
         sheet.mergeCells("B3:E3");
         const subtitleCell = sheet.getCell("B3");
         subtitleCell.value = "Project : BC - Ceisa 4.0 Th 2026";
         subtitleCell.font = { name: "Arial", size: 10, bold: true };
         subtitleCell.alignment = { vertical: "middle", horizontal: "center" };
 
-        // 3. Header table dimulai row 7
         sheet.mergeCells("A7:A8");
         const hDate = sheet.getCell("A7");
         hDate.value = "Date";
@@ -989,12 +898,11 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
         sheet.getCell("E8").value = "Detail (Menu/Halaman/EndPoint/Repo, dll)";
         sheet.getCell("F8").value = "Status";
 
-        // Style Headers
         const headerCells = ["A7", "B7", "C7", "C8", "D8", "E8", "F8"];
         for (const loc of headerCells) {
           const cell = sheet.getCell(loc);
-          cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } }; // White
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0000FF" } }; // Blue #0000FF
+          cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0000FF" } };
           cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
           cell.border = {
             top: { style: "thin" }, left: { style: "thin" },
@@ -1002,10 +910,8 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
           };
         }
 
-        // Write Data
         let currentRow = 9;
         
-        // Group finalRows by Date -> PIC for merging
         const groupedByDateAndPic = [];
         let currentGroup = null;
         for (const row of finalRows) {
@@ -1063,13 +969,12 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
           sheet.mergeCells(`A${currentDateStartRow}:A${currentRow - 1}`);
         }
 
-        // Adjust column widths
-        sheet.getColumn(1).width = 18; // Date
-        sheet.getColumn(2).width = 25; // PIC
-        sheet.getColumn(3).width = 15; // Title
-        sheet.getColumn(4).width = 40; // Description
-        sheet.getColumn(5).width = 40; // Detail
-        sheet.getColumn(6).width = 20; // Status
+        sheet.getColumn(1).width = 18;
+        sheet.getColumn(2).width = 25;
+        sheet.getColumn(3).width = 15;
+        sheet.getColumn(4).width = 40;
+        sheet.getColumn(5).width = 40;
+        sheet.getColumn(6).width = 20;
 
         const buffer = await workbook.xlsx.writeBuffer();
         excelMedia = {
@@ -1091,7 +996,6 @@ export async function runReport(sendWhatsAppMessage, sendInternalMessage, isDebu
         if (sendWhatsAppMessage) {
           await sendWhatsAppMessage(allMessages[i]);
           console.log(`📤 Sent message ${i + 1}/${allMessages.length}`);
-          // Always delay 3 seconds after sending a message to prevent websocket abort on script exit
           await new Promise((r) => setTimeout(r, 3000));
         }
       }

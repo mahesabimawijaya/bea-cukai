@@ -30,22 +30,20 @@ export async function initDB() {
   }
 
   // Pool, BUKAN Client. Client tunggal yang dipegang berjam-jam akan mati
-  // permanen begitu koneksinya putus sekali (server restart, idle timeout,
-  // atau jaringan kedip) - semua query sesudahnya gagal sampai proses
-  // di-restart. Pool membuang koneksi mati dan bikin yang baru sendiri.
+  // permanen begitu koneksinya putus sekali — semua query sesudahnya gagal
+  // sampai proses di-restart. Pool membuang koneksi mati dan bikin yang baru.
   dbClient = new Pool({ connectionString: process.env.DATABASE_URL });
 
   // WAJIB ADA. Tanpa listener 'error', koneksi yang putus di luar query aktif
   // membuat EventEmitter Node melempar 'Unhandled error event' yang MEMBUNUH
-  // seluruh proses bot - bukan cuma menggagalkan query. Ini yang bikin bot
-  // mati berulang (PM2 restart 4x) dan cron snapshot 20:00 tidak pernah jalan
-  // lagi setelah 12 Agustus 2026.
+  // seluruh proses bot. Ini yang bikin bot mati berulang (PM2 restart 4x) dan
+  // cron snapshot 20:00 tidak pernah jalan lagi setelah 12 Agustus 2026.
   dbClient.on("error", (err) => {
     console.error("⚠️ Koneksi DB idle bermasalah (Pool akan menggantinya sendiri):", err.message);
   });
 
-  // Pool connect secara lazy, jadi dipancing sekali supaya kegagalan
-  // kredensial/jaringan ketahuan sekarang, bukan nanti saat cron jalan.
+  // Pool connect secara lazy, dipancing sekali supaya kegagalan kredensial/jaringan
+  // ketahuan sekarang, bukan nanti saat cron jalan.
   await dbClient.query("SELECT 1");
 
   await dbClient.query(`
@@ -100,9 +98,6 @@ async function markAlertSent(issueKey, alertType) {
   );
 }
 
-
-// ─── Constants & Configuration ──────────────────────────────────────────────
-
 export const SA_WA_NUMBERS = {
   "willy taufik": "6281290219036",
   "farisan": "6285176989952",
@@ -135,21 +130,18 @@ function formatAssigneeDisplay(name) {
   return name;
 }
 
-// ─── Logic Helpers ─────────────────────────────────────────────────────────
-
 function getSLAHours(complexity) {
   const c = (complexity || "").toUpperCase();
   if (c.includes("SIMPLE")) return 50;
   if (c.includes("AVG") || c.includes("AVERAGE")) return 150;
   if (c.includes("COMPLEX")) return 300;
-  return 150; // default average
+  return 150;
 }
 
 function getStatusStartTime(issue, targetStatus) {
   if (!issue.changelog || !issue.changelog.histories)
     return new Date(issue.fields.created);
 
-  // Search histories from newest to oldest
   for (let i = issue.changelog.histories.length - 1; i >= 0; i--) {
     const history = issue.changelog.histories[i];
     for (const item of history.items) {
@@ -170,7 +162,6 @@ function calculateTimeSpentInStatus(issue, statusName) {
   let timeSpentMs = 0;
   let enteredStatusAt = null;
 
-  // Search from oldest to newest to accumulate time spent
   for (let i = 0; i < issue.changelog.histories.length; i++) {
     const history = issue.changelog.histories[i];
     for (const item of history.items) {
@@ -193,18 +184,14 @@ function calculateTimeSpentInStatus(issue, statusName) {
     timeSpentMs += new Date().getTime() - enteredStatusAt.getTime();
   }
 
-  return timeSpentMs / (1000 * 60 * 60); // convert to hours
+  return timeSpentMs / (1000 * 60 * 60);
 }
 
 /**
- * Apakah tiket PERNAH tercatat berstatus `statusName` di changelog-nya (kapan
- * saja, tidak harus baru-baru ini).
- *
  * Pakai `.includes()`, BUKAN exact match — nama status asli di Jira ternyata
  * literally mengandung emoji ("🔴 Pending", bukan "Pending" polos), terverifikasi
  * dari changelog BUGS26-1868. Exact match akan selalu gagal cocok dan bikin
- * fix ini jadi no-op diam-diam. Konsisten dengan pola `.includes("pending")`
- * yang sudah dipakai di cron-whatsapp.mjs/cron-telegram.mjs untuk status ini.
+ * fix ini jadi no-op diam-diam.
  */
 function hasEverBeenInStatus(issue, statusName) {
   const target = statusName.toLowerCase();
@@ -230,8 +217,6 @@ function categorizeTask(statusName) {
   if (s === "task to do") return "tasktodo";
   return "other";
 }
-
-// ─── Main Polling ──────────────────────────────────────────────────────────
 
 export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
   const typeLabel = isFullSla ? "Full SLA" : "New Task";
@@ -305,8 +290,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
     const statusCat = categorizeTask(rawStatus);
     const key = issue.key;
     const summary = issue.fields.summary;
-    
-    // Check if any SA member is associated with this ticket (Assignee or customfield_10613)
+
     let isSA = false;
     let saNames = [];
 
@@ -332,32 +316,22 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
 
     const assignee = saNames.join(", ");
 
-    // 1. New Todo
     const created = new Date(issue.fields.created);
     const hoursSinceCreated =
       (now.getTime() - created.getTime()) / (1000 * 60 * 60);
 
-    // SEBELUMNYA dibatasi `hoursSinceCreated < 24` untuk "avoid old spam", tapi
-    // field System Analyst (customfield_10613) sering diisi BELAKANGAN setelah
-    // tiket dibuat (dan tidak ter-track di changelog Jira) — begitu SA baru
-    // ketahuan setelah lewat 24 jam, alert jadi tertutup PERMANEN padahal
-    // tiketnya baru saja "terlihat" jadi tanggung jawab SA. Contoh nyata:
-    // BUGS26-2154/2155/2156 (Agustus 2026) — assignee kosong saat dibuat,
-    // cf_10613 baru terisi belakangan, alert tidak pernah terkirim sama sekali.
-    // `hasAlertBeenSent` tetap satu-satunya penjaga dedup; batas 30 hari di
-    // sini murni jaga-jaga kalau tabel jira_sla_alerts pernah ter-reset,
-    // bukan logic utama.
+    // Field System Analyst (customfield_10613) sering diisi BELAKANGAN setelah
+    // tiket dibuat dan tidak ter-track di changelog Jira — begitu SA baru ketahuan
+    // setelah lewat 24 jam, alert jadi tertutup PERMANEN padahal tiketnya baru
+    // saja "terlihat" jadi tanggung jawab SA. Contoh nyata: BUGS26-2154/2155/2156.
+    // `hasAlertBeenSent` tetap satu-satunya penjaga dedup; batas 30 hari di sini
+    // murni jaga-jaga kalau tabel jira_sla_alerts pernah ter-reset.
     //
-    // PENTING: blok ini dari dulu TIDAK pernah mengecek statusCat, cuma isSA +
-    // umur + belum-pernah-alert. Ketutup kebetulan oleh gerbang 24 jam yang
-    // lama (tiket yang sudah maju ke QC/Invalid biasanya juga sudah lewat 24
-    // jam sejak dibuat), makanya baru ketahuan sekarang: begitu gerbang umur
-    // dilonggarkan, tiket yang statusnya SUDAH BUKAN To Do lagi (mis. QC BC -
-    // Testing Staging, atau malah sudah Invalid) ikut dapat "New Task
-    // Assigned" — nyata terjadi 6 Agustus 2026, 64 tiket ter-alert sekaligus
-    // termasuk BUGS26-1805 (status QC BC - Testing Staging) dan BUGS26-1806/
-    // 1832 (status Invalid). Makanya wajib syaratkan statusnya MASIH To Do/
-    // Task To Do/Open saat ini, bukan cuma soal umur tiket.
+    // PENTING: blok ini wajib syaratkan statusnya MASIH To Do/Task To Do/Open saat
+    // ini. Begitu gerbang umur dilonggarkan tanpa syarat status ini, tiket yang
+    // statusnya SUDAH BUKAN To Do lagi (mis. QC BC - Testing Staging, atau Invalid)
+    // ikut dapat "New Task Assigned" — nyata terjadi 6 Agustus 2026, 64 tiket
+    // ter-alert sekaligus termasuk BUGS26-1805 dan BUGS26-1806/1832 (status Invalid).
     if (
       (statusCat === "todo" || statusCat === "tasktodo") &&
       hoursSinceCreated < 24 * 30 &&
@@ -371,19 +345,13 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
     }
 
     if (statusCat === "todo") {
-      // 2. SLA To Do -> In Progress (60 mins)
-      //
-      // Kesepakatan dengan tim SA (Agustus 2026): SLA breach "To Do" cuma
-      // dihitung pada kunjungan PERTAMA tiket ke status itu. Kalau tiket
-      // sempat di-Pending lalu siklusnya balik lagi lewat Task To Do -> To Do
-      // (lihat flow: PENDING -> TASK TO DO -> TO DO -> IN PROGRESS),
-      // kunjungan kedua & seterusnya TIDAK dihitung — walau berapa lama pun
-      // dia diam di situ.
+      // SLA breach "To Do" cuma dihitung pada kunjungan PERTAMA tiket ke status
+      // itu. Kalau tiket sempat di-Pending lalu siklusnya balik lagi lewat Task
+      // To Do -> To Do, kunjungan kedua & seterusnya TIDAK dihitung.
       //
       // hoursSinceCreated di sini bukan "lama di To Do saat ini", tapi "lama
-      // sejak tiket dibuat" — jadi begitu tiket sudah pernah Pending, angka
-      // itu nyaris pasti >1 jam dan salah memicu alert padahal tiketnya baru
-      // saja masuk To Do lagi. Contoh nyata: BUGS26-1868.
+      // sejak tiket dibuat" — begitu tiket sudah pernah Pending, angka itu nyaris
+      // pasti >1 jam dan salah memicu alert. Contoh nyata: BUGS26-1868.
       const alreadyWentThroughPending = hasEverBeenInStatus(issue, "pending");
 
       if (
@@ -399,8 +367,7 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         console.log(`Sent SLA_TODO for ${key}`);
       }
     } else if (isFullSla && statusCat === "inprogress") {
-      // 3. SLA In Progress -> Code Review (H-1 Reminder)
-      const complexity = issue.fields.customfield_10619?.value; // SIMPLE, AVG, COMPLEX
+      const complexity = issue.fields.customfield_10619?.value;
       const totalSla = getSLAHours(complexity);
       const inProgressStart = getStatusStartTime(issue, "in progress");
 
@@ -420,19 +387,17 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         console.log(`Sent H1_INPROGRESS for ${key}`);
       }
     } else if (isFullSla && statusCat === "tasktodo") {
-      // Gentleman Agreement: Task To Do > 3 days (72 hours)
       const hoursInTaskToDo = calculateTimeSpentInStatus(issue, "task to do");
-      
+
       if (hoursInTaskToDo > maxHoursInTaskToDo) {
         maxHoursInTaskToDo = hoursInTaskToDo;
         closestTaskToDo = { key, summary, assignee, hours: hoursInTaskToDo };
       }
-      
+
       if (
         hoursInTaskToDo >= 72 &&
         !(await hasAlertBeenSent(key, "TASK_TODO_3DAYS"))
       ) {
-        // Skip explicitly allowed task to do tickets if needed (e.g., Stresstest)
         if (!summary.toLowerCase().includes("stresstest")) {
            await sendAlertMessage(
             `🔔 *Reminder (Gentleman Agreement)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket ini sudah berada di antrian *Task To Do* lebih dari 3 hari. Mohon diproses dan ubah status ke _To Do_ lalu _In Progress_ jika sudah dikerjakan.`,
@@ -442,7 +407,6 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
         }
       }
     } else if (isFullSla && rawStatus.includes("revisi")) {
-      // 4. Revisi (Sisa waktu = SLA - waktu terpakai In Progress)
       if (!(await hasAlertBeenSent(key, "REVISI_ENTER"))) {
         const complexity = issue.fields.customfield_10619?.value;
         const totalSla = getSLAHours(complexity);

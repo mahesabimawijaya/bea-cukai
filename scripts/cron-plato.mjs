@@ -14,34 +14,23 @@ const PROJECT_ROOT = path.join(
   "..",
 );
 
-// ─── Config ─────────────────────────────────────────────────────────────────
-
 const PLATO_BASE_URL =
   process.env.PLATO_BASE_URL || "https://plato-api.nirantara.id/api/v1";
 const PLATO_X_API_KEY = process.env.PLATO_X_API_KEY;
 const PLATO_CERT_PATH = process.env.PLATO_CERT_PATH;
 const PLATO_CERT_PASSPHRASE = process.env.PLATO_CERT_PASSPHRASE;
 const PLATO_TOP_N = Number(process.env.PLATO_TOP_N || 10);
-// Pool statistik Plato dipakai untuk melengkapi Total/History per kode SOP
-// yang ditemukan dari Jira. Maks 50 (limit Plato).
+// Maks 50 (limit Plato).
 const PLATO_POOL_SIZE = Number(process.env.PLATO_POOL_SIZE || 50);
-// Lebar jendela laporan: 7 hari terakhir termasuk hari ini.
 const PLATO_RANGE_DAYS = Number(process.env.PLATO_RANGE_DAYS || 7);
-// Berapa hari ke belakang tren harian diambil untuk bagian "History Tiket".
-// Sengaja lebih lebar dari jendela laporan supaya konteksnya kelihatan;
-// yang ditampilkan tetap 7 hari yang ada tiketnya (lihat formatHistoryLines).
+// Lebih lebar dari jendela laporan supaya tren tetap punya konteks pembanding.
 const PLATO_TREND_DAYS = Number(process.env.PLATO_TREND_DAYS || 14);
-// Rentang hari ke belakang untuk mencari tiket BUGS26 [BERULANG]. Default 0 =
-// tanpa batas — bug yang statusnya sudah "Done" berbulan lalu tetap relevan
-// selama masih menyebabkan tiket baru di Plato minggu ini (recency Jira bukan
-// indikator "masih relevan", karena tim tidak selalu menyentuh tiket lama
-// walau isunya masih dipantau di produksi). Set >0 kalau ingin dibatasi.
+// Default 0 = tanpa batas — bug yang statusnya sudah "Done" berbulan lalu tetap
+// relevan selama masih menyebabkan tiket baru di Plato minggu ini.
 const PLATO_JIRA_LOOKBACK_DAYS = Number(
   process.env.PLATO_JIRA_LOOKBACK_DAYS || 0,
 );
 const PLATO_APPLICATION = process.env.PLATO_APPLICATION || "";
-
-// ─── HTTP client (mTLS) ─────────────────────────────────────────────────────
 
 let platoClient = null;
 
@@ -94,8 +83,6 @@ async function platoGet(endpoint, params = {}) {
   }
 }
 
-// ─── Date helpers ───────────────────────────────────────────────────────────
-
 function toApiDate(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -103,13 +90,8 @@ function toApiDate(date) {
   return `${y}-${m}-${d}`;
 }
 
-/**
- * Rentang N hari terakhir termasuk hari ini (default 7).
- *
- * Sebelumnya dipakai "Senin minggu ini s/d hari ini", tapi itu bikin lebar
- * jendela berubah-ubah — kalau report dijalankan Senin, datanya cuma 1 hari.
- * Rolling 7 hari selalu konsisten berapa pun harinya.
- */
+// Rolling N hari selalu konsisten berapa pun harinya — tidak seperti "Senin minggu ini"
+// yang bikin jendela 1 hari kalau report dijalankan hari Senin.
 function getReportRange(days = PLATO_RANGE_DAYS) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -119,8 +101,6 @@ function getReportRange(days = PLATO_RANGE_DAYS) {
 
   return { dateFrom: toApiDate(from), dateTo: toApiDate(today) };
 }
-
-// ─── Plato fetchers ─────────────────────────────────────────────────────────
 
 function formatPercentage(count, total, explicitVal) {
   if (explicitVal !== undefined && explicitVal !== null && explicitVal !== "") {
@@ -138,9 +118,9 @@ export async function fetchTop10({ dateFrom, dateTo, pageSize = PLATO_TOP_N }) {
     date_from: dateFrom,
     date_to: dateTo,
     statistic_mode: "by_start_time",
-    // "Bugs Aplikasi Tertinggi" — kriteria yang sama dipakai laporan manual
-    // (dikonfirmasi dari dropdown FE Plato asli + tie-break total_ticket
-    // yang cocok 3/3 kasus dasi terhadap laporan manual).
+    // "Bugs Aplikasi Tertinggi" — kriteria yang sama dipakai laporan manual,
+    // dikonfirmasi dari dropdown FE Plato asli + tie-break total_ticket
+    // yang cocok 3/3 kasus dasi terhadap laporan manual.
     order_by: "total_bugs_application",
     order_dir: "desc",
     page: 1,
@@ -252,8 +232,6 @@ export async function fetchTicketsBySop(sopCode, { dateFrom, dateTo }) {
   return data?.data || [];
 }
 
-// ─── Jira: sumber utama Top-10 (bug [BERULANG] yang aktif dimonitor) ─────────
-
 export function jiraAuthHeader() {
   return process.env.JIRA_PAT
     ? `Bearer ${process.env.JIRA_PAT}`
@@ -268,20 +246,14 @@ export function jiraAuthHeader() {
 const SOP_CODE_RE = /\b(AL|OT|ED)[\s-]?\d{1,4}\b/i;
 
 /**
- * Ekstrak SEMUA kode SOP + baris judul dari deskripsi tiket BUGS26 — SATU
- * tiket bisa menyebut BEBERAPA kode SOP sekaligus (root cause yang sama
- * berdampak ke beberapa kategori Plato), contoh nyata BUGS26-1289/1381:
- *   [AL6] CEISA 4.0 PEB Status Stuck LNSW Penerimaan Dokumen ...
- *   [AL10] CEISA 4.0 PIB Status Stuck LNSW Penerimaan Dokumen
- *   [OT118] CEISA 4.0 TPB ... terhenti pada status LNSW ...
- * Kalau cuma diambil baris PERTAMA yang cocok (AL6), AL10/OT118 tidak akan
- * pernah ketemu Permasalahan/Analisa/Perbaikan-nya walau tiketnya sama persis.
+ * Ekstrak SEMUA kode SOP + baris judul dari deskripsi tiket BUGS26. Satu tiket
+ * bisa menyebut BEBERAPA kode SOP (root cause yang sama berdampak ke beberapa
+ * kategori Plato). Kalau cuma diambil baris PERTAMA yang cocok, kode lain tidak
+ * akan pernah ketemu Permasalahan/Analisa/Perbaikan-nya.
  *
- * Template tiap dev bisa beda urutan field-nya (ada yang menyelipkan baris
- * "Kategori Masalah Tiket" dsb sebelum baris kode) — jadi jangan ambil "baris
- * setelah heading" secara posisional, cari SEMUA baris yang BENAR-BENAR
- * memuat kode SOP. Fallback ke summary kalau tidak ada satu pun baris
- * deskripsi cocok.
+ * Template tiap dev bisa beda urutan field-nya — jadi jangan ambil "baris setelah
+ * heading" secara posisional, cari SEMUA baris yang memuat kode SOP. Fallback ke
+ * summary kalau tidak ada satu pun baris deskripsi cocok.
  */
 function extractSopInfoList(issue) {
   const desc = issue.fields.description || "";
@@ -298,8 +270,7 @@ function extractSopInfoList(issue) {
     return [{ code, subjectLine: cleanAfterMatch(summary, codeMatch[0]) }];
   }
 
-  // Dedupe: satu kode bisa disebut lebih dari sekali (mis. di baris "Nama
-  // Permasalahan" DAN di daftar kode terdampak) — pertahankan match pertama.
+  // Dedupe: satu kode bisa disebut lebih dari sekali — pertahankan match pertama.
   const byCode = new Map();
   for (const line of matchingLines) {
     const codeMatch = SOP_CODE_RE.exec(line);
@@ -315,11 +286,10 @@ function extractSopInfoList(issue) {
 }
 
 /**
- * Ambil teks SETELAH `matchedText` di suatu baris, apapun yang mendahuluinya
- * ("[BE]", "[AL233] -", dll) — jangan coba cocokkan karakter bracket-nya
- * secara literal, karena deskripsi Jira kadang di-paste dari sumber lain
- * dan bisa mengandung tanda kurung Unicode yang mirip tapi bukan ASCII
- * "[" "]" biasa, sehingga regex berbasis bracket gagal match secara diam-diam.
+ * Ambil teks setelah `matchedText` di suatu baris. Jangan coba cocokkan bracket
+ * secara literal — deskripsi Jira kadang mengandung tanda kurung Unicode yang
+ * mirip tapi bukan ASCII "[" "]", sehingga regex berbasis bracket gagal match
+ * secara diam-diam.
  */
 function cleanAfterMatch(rawLine, matchedText) {
   const s = cleanText(rawLine);
@@ -330,18 +300,9 @@ function cleanAfterMatch(rawLine, matchedText) {
   return after.trim() || s;
 }
 
-// ─── Ekstrak section Permasalahan/Analisa/Perbaikan dari deskripsi Jira ─────
-//
-// Deskripsi tiket BUGS26 [BERULANG] biasanya mengikuti template baku:
-//   *Nama Permasalahan (biasanya sesuai plato)*
-//   *Kategori Masalah Tiket (PLATO/Layer1/2/3) :*
-//   *Permasalahan :*
-//   *Analisa :*
-//   *Perbaikan yang dilakukan :*
-//   *Repository* / *Branch*
-// Bold-nya (tanda "*") kadang tidak konsisten dipakai tiap dev, jadi parsing
-// dilakukan per-baris: cari baris yang HANYA berisi label section (bukan
-// baris isi), lalu kumpulkan baris-baris sesudahnya sampai ketemu label lain.
+// Deskripsi tiket BUGS26 [BERULANG] biasanya mengikuti template baku dengan
+// section label bold ("*Permasalahan :*", "*Analisa :*", dll). Bold-nya kadang
+// tidak konsisten dipakai tiap dev, jadi parsing dilakukan per-baris.
 const SECTION_LABELS = [
   "nama permasalahan",
   "kategori masalah tiket",
@@ -361,12 +322,9 @@ function isSectionLabelLine(line) {
 }
 
 /**
- * Buang markup wiki Jira yang tidak berarti kalau ditampilkan mentah di WA:
- * gambar terlampir ("!file.png|width=X!"), blok {code}/{color}, tanda kurung
- * yang di-escape ("\{...}"), dan bold/italic ("{*}x{*}", "_*x*_", "*x*").
- * Sengaja TIDAK menyentuh underscore tunggal — banyak nama kolom DB di sini
- * pakai snake_case (tr_perusahaan_blokir_nasional dst) yang mirip syntax
- * italic Jika distrip naif akan merusak nama field tersebut.
+ * Buang markup wiki Jira yang tidak berarti kalau ditampilkan mentah di WA.
+ * Sengaja TIDAK menyentuh underscore tunggal — banyak nama kolom DB pakai
+ * snake_case yang mirip syntax italic; distrip naif akan merusak nama field.
  */
 function stripJiraMarkup(text) {
   return text
@@ -410,11 +368,6 @@ export function extractStructuredSections(desc) {
   };
 }
 
-/**
- * Ambil semua tiket BUGS26 bertag [BERULANG] — ini yang menentukan kandidat
- * mana yang boleh masuk Top-10 (urutannya sendiri ditentukan oleh volume
- * tiket Plato minggu ini, lihat runPlatoReport).
- */
 async function fetchRecurringBugs({
   lookbackDays = PLATO_JIRA_LOOKBACK_DAYS,
 } = {}) {
@@ -462,14 +415,10 @@ async function fetchRecurringBugs({
 
 /**
  * Kelompokkan tiket [BERULANG] berdasarkan kode SOP yang diekstrak dari
- * deskripsinya. Satu tiket bisa menyumbang ke BEBERAPA kode SOP sekaligus
- * (lihat extractSopInfoList) — Permasalahan/Analisa/Perbaikan-nya (section
- * level TIKET, bukan per-kode) ikut disalin ke semua kode yang disebut tiket
- * itu. Satu kode juga bisa punya beberapa tiket (mis. AL259 punya 5) —
- * Permasalahan/Analisa/Perbaikan diambil dari tiket PERTAMA (paling baru
- * di-update, karena fetchRecurringBugs sudah ORDER BY updated DESC) yang
- * berhasil menemukan section "Permasalahan" lengkap, supaya konsisten satu
- * sumber untuk ketiga section tersebut (bukan campuran antar tiket).
+ * deskripsinya. Satu tiket bisa menyumbang ke BEBERAPA kode SOP; satu kode
+ * juga bisa punya beberapa tiket. Permasalahan/Analisa/Perbaikan diambil dari
+ * tiket PERTAMA (paling baru di-update) yang berhasil menemukan section
+ * "Permasalahan" lengkap, supaya konsisten satu sumber untuk ketiga section.
  */
 function groupBugsBySopCode(issues) {
   const groups = new Map();
@@ -477,10 +426,8 @@ function groupBugsBySopCode(issues) {
   for (const issue of issues) {
     const desc = issue.fields.description || "";
     const sopInfoList = extractSopInfoList(issue);
-    if (!sopInfoList.length) continue; // tidak bisa dipetakan ke kode SOP apapun, skip
+    if (!sopInfoList.length) continue;
 
-    // Section level TIKET (bukan per-kode) — hitung sekali, dipakai bareng
-    // oleh semua kode yang disebut tiket ini.
     const sections = extractStructuredSections(desc);
 
     for (const { code, subjectLine } of sopInfoList) {
@@ -520,25 +467,23 @@ function groupBugsBySopCode(issues) {
   return groups;
 }
 
-// ─── Formatting ─────────────────────────────────────────────────────────────
-
-// Data Plato kadang mengandung zero-width / BOM (lihat "wk_inout⎘🌐" di report manual).
+// Data Plato kadang mengandung zero-width / BOM.
 const INVISIBLE_CHARS = /[\u200B-\u200D\uFEFF]/g;
 
 export function cleanText(s) {
-  return (s || "")
-    .replace(INVISIBLE_CHARS, "")
-    // Placeholder blank yang belum diisi penulis tiket, mis. "Waktu Closing
-    // _______)" — bukan konten, cuma isyarat "isi di sini" yang lupa dihapus.
-    .replace(/_{2,}/g, "")
-    .replace(/\(\s*\)/g, "")
-    .replace(/\(\s+/g, "(")
-    .replace(/\s+\)/g, ")")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    (s || "")
+      .replace(INVISIBLE_CHARS, "")
+      // Placeholder blank yang belum diisi penulis tiket ("Waktu Closing _______)").
+      .replace(/_{2,}/g, "")
+      .replace(/\(\s*\)/g, "")
+      .replace(/\(\s+/g, "(")
+      .replace(/\s+\)/g, ")")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
-/** Ambil nilai unik terbanyak dari sebuah field di daftar tiket. */
 export function topDistinct(tickets, field, limit = 3) {
   const counts = new Map();
   for (const t of tickets) {
@@ -552,10 +497,6 @@ export function topDistinct(tickets, field, limit = 3) {
     .map(([v]) => v);
 }
 
-/**
- * Kode SOP yang tidak masuk pool Top-10 Plato (volume rendah minggu ini)
- * tetap perlu Total/History — hitung manual dari /tickets/by-sop.
- */
 function aggregateTicketsFallback(tickets) {
   const dayCounts = new Map();
   let bugs = 0;
@@ -588,7 +529,6 @@ function aggregateTicketsFallback(tickets) {
   };
 }
 
-/** Tren harian jadi baris-baris berbullet, hanya hari yang ada tiketnya. */
 export function formatHistoryLines(dailyTrends) {
   return (dailyTrends || [])
     .filter((d) => (d.total || 0) > 0)
@@ -604,29 +544,23 @@ function toTitleCase(s) {
  * cc HANYA untuk tim SA Altros — nama lain yang muncul di field System Analyst
  * (tim BC, QC, dsb) sengaja dibuang karena laporan ini ditujukan ke tim SA saja.
  * SA_WA_NUMBERS di cron-sla-whatsapp.mjs adalah satu-satunya sumber kebenaran
- * daftar anggota + nomornya, jadi semua yang lolos filter pasti punya nomor dan
- * ter-mention beneran (bukan tag teks kosong).
- *
- * Nama tampilnya diambil dari kunci SA_WA_NUMBERS, bukan dari displayName Jira,
- * supaya konsisten — displayName "M Farisan Hidayatullah" akan tampil sebagai
- * "mas M" kalau diambil token pertamanya.
+ * daftar anggota + nomornya.
  */
 function formatCc(names) {
-  const seen = new Map(); // nomor -> label, sekaligus mencegah duplikat
+  const seen = new Map();
   for (const full of names) {
     const lower = (full || "").toLowerCase();
     const hit = Object.entries(SA_WA_NUMBERS).find(([key]) =>
       lower.includes(key),
     );
-    if (!hit) continue; // bukan tim SA Altros
+    if (!hit) continue;
     const [key, phone] = hit;
     if (!seen.has(phone)) seen.set(phone, `mas ${toTitleCase(key)} @${phone}`);
   }
   return [...seen.values()].join(", ");
 }
 
-// Pembatas antar-issue — dipasang sebelum tiap item. Di-export supaya laporan
-// Cukai (cron-cukai.mjs) memakai pembatas yang sama persis, bukan salinan.
+// Di-export supaya laporan Cukai (cron-cukai.mjs) memakai pembatas yang sama persis.
 export const SECTION_DIVIDER = "═".repeat(28);
 
 export function formatPlatoReport({
@@ -652,11 +586,6 @@ export function formatPlatoReport({
     body.push(`*${idx + 1}. ${row.code} ${row.subject}*`);
     body.push("");
 
-    // Sub-judul di-bold (tanda "*" tunggal = bold di WhatsApp) + dikasih
-    // jarak (baris kosong) sebelum & sesudah tiap section, sesuai revisi
-    // Mang Andrian: "tulisan Summary Issue, History Tiket, Permasalahan,
-    // Analisa, Perbaikan, Tiket Penyelesaian dibuat tulisan Bold" +
-    // "tambahin jarak paling ya sis yg td di Bold".
     body.push(`*Summary Issue :*`);
     body.push(`- Total: ${row.totalTicket}`);
     body.push(`- Bugs Aplikasi: ${row.totalBugs}`);
@@ -686,8 +615,6 @@ export function formatPlatoReport({
     }
     body.push("");
 
-    // Diambil dari section "Analisa"/"Perbaikan yang dilakukan" pada deskripsi
-    // tiket Jira (kalau tersedia) — kalau tidak ada, wajib dilengkapi manual.
     body.push(`*Analisa :*`);
     body.push(d.analisa || `[ISI MANUAL - root cause & progress penanganan]`);
     body.push("");
@@ -723,24 +650,16 @@ export function formatPlatoReport({
   return parts.join("\n");
 }
 
-// ─── Orchestrator ───────────────────────────────────────────────────────────
-
-/**
- * Generate laporan Top-10 Plato. Kembalikan teksnya; kirim ke WA kalau
- * `sendMessage` diberikan.
- */
 export async function runPlatoReport(sendMessage = null, isDebug = false) {
   const { dateFrom, dateTo } = getReportRange();
   console.log(
     `📊 Plato Top-10: ${dateFrom} s/d ${dateTo} (${PLATO_RANGE_DAYS} hari terakhir)`,
   );
 
-  // Sumber SELEKSI Top-10 adalah Plato sendiri, sort by Bugs Aplikasi
-  // tertinggi — persis kriteria yang dipakai laporan manual (dikonfirmasi
-  // dari dropdown "Bugs Aplikasi Tertinggi" di screenshot native FE Plato,
-  // dan tie-break-nya total_ticket, keduanya cocok 3/3 kasus dasi terhadap
-  // laporan manual asli). BUKAN lagi Jira [BERULANG] sebagai gate kandidat —
-  // itu cuma jadi sumber ENRICHMENT (Permasalahan/Analisa/Perbaikan) di bawah.
+  // Sumber SELEKSI Top-10 adalah Plato sendiri, sort by Bugs Aplikasi tertinggi —
+  // persis kriteria dropdown "Bugs Aplikasi Tertinggi" di screenshot native FE Plato,
+  // tie-break-nya total_ticket, keduanya cocok 3/3 kasus dasi terhadap laporan manual.
+  // Jira [BERULANG] hanya dipakai sebagai sumber ENRICHMENT (Permasalahan/Analisa/Perbaikan).
   const { rows: platoTop10, summary } = await fetchTop10({
     dateFrom,
     dateTo,
@@ -755,8 +674,6 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     return null;
   }
 
-  // Jira [BERULANG] tetap dipindai penuh (tanpa batas), tapi sekarang cuma
-  // dipakai sebagai LOOKUP per kode terpilih — bukan sumber daftar kandidat.
   console.log(
     `🔎 Mencari tiket BUGS26 [BERULANG] (${PLATO_JIRA_LOOKBACK_DAYS} hari terakhir)...`,
   );
@@ -792,10 +709,8 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
       totalOther: platoRow.totalOther,
       dailyTrends: platoRow.dailyTrends,
     });
-    // group bisa undefined kalau kode ini tidak punya tiket [BERULANG] yang
-    // match (nyata terjadi di laporan manual juga, mis. "AL200: Sedang
-    // dianalisa lebih lanjut") — formatPlatoReport sudah otomatis jatuh ke
-    // placeholder [ISI MANUAL...] kalau permasalahan/analisa/perbaikan kosong.
+    // group bisa undefined kalau kode ini tidak punya tiket [BERULANG] yang match.
+    // formatPlatoReport sudah otomatis jatuh ke placeholder [ISI MANUAL...].
     details[platoRow.code] = {
       tickets,
       jira: group?.issues || [],
@@ -818,8 +733,6 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     console.log("\n─────────────────────────\n");
   }
 
-  // Render 2 gambar tabel meniru gaya screenshot manual (statistik + history
-  // per SOP). Kegagalan render TIDAK menggagalkan laporan — teks tetap jalan.
   console.log("🖼️  Merender gambar tabel...");
   const [statImage, historyImage] = await Promise.all([
     renderStatTableImage(rows, summary),
@@ -829,8 +742,6 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
     `${statImage ? "✅" : "⚠️ "} Tabel statistik${statImage ? " berhasil" : " gagal"} dirender. ${historyImage ? "✅" : "⚠️ "} Tabel history${historyImage ? " berhasil" : " gagal"} dirender.`,
   );
 
-  // Dry-run: simpan PNG ke disk lokal supaya bisa dicek visual sebelum ada
-  // yang benar-benar terkirim ke grup produksi.
   if (isDebug) {
     const outDir = path.join(PROJECT_ROOT, "scripts", "_plato-preview");
     fs.mkdirSync(outDir, { recursive: true });
@@ -847,7 +758,6 @@ export async function runPlatoReport(sendMessage = null, isDebug = false) {
   }
 
   if (sendMessage) {
-    // Urutan meniru kebiasaan manual: screenshot dulu, teks lengkap nyusul.
     if (statImage) {
       await sendMessage("📊 Ticket Solution Statistic", {
         mimetype: "image/png",
