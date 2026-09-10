@@ -123,19 +123,31 @@ function getStatusStartTime(issue, targetStatus) {
   if (!issue.changelog || !issue.changelog.histories)
     return new Date(issue.fields.created);
 
-
+  const target = (targetStatus || "").toLowerCase().trim();
   for (let i = issue.changelog.histories.length - 1; i >= 0; i--) {
     const history = issue.changelog.histories[i];
     for (const item of history.items) {
       if (
         item.field === "status" &&
-        item.toString.toLowerCase() === targetStatus.toLowerCase()
+        (item.toString || "").toLowerCase().trim() === target
       ) {
         return new Date(history.created);
       }
     }
   }
   return new Date(issue.fields.created);
+}
+
+function hasEverBeenInStatus(issue, statusName) {
+  const target = statusName.toLowerCase();
+  for (const history of issue.changelog?.histories || []) {
+    for (const item of history.items) {
+      if (item.field !== "status") continue;
+      if ((item.toString || "").toLowerCase().includes(target)) return true;
+      if ((item.fromString || "").toLowerCase().includes(target)) return true;
+    }
+  }
+  return false;
 }
 
 function calculateTimeSpentInStatus(issue, statusName) {
@@ -301,13 +313,32 @@ async function runSlaCheck(isFullSla = true) {
     }
 
     if (statusCat === "todo") {
+      const alreadyWentThroughPending = hasEverBeenInStatus(issue, "pending");
+      const toDoStart = getStatusStartTime(issue, rawStatus);
+      const minutesInToDo = (now.getTime() - toDoStart.getTime()) / (1000 * 60);
+      const hoursInToDo = minutesInToDo / 60;
+
       if (
         isFullSla &&
-        hoursSinceCreated >= 1 &&
+        !alreadyWentThroughPending &&
+        minutesInToDo >= 20 &&
+        !(await hasAlertBeenSent(key, "REMINDER_TODO_20M"))
+      ) {
+        await sendTelegramMessage(
+          `⏳ <b>Reminder: To Do (20 Menit)</b>\n\n📌 <b>[${key}]</b> ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket sudah berada di antrean <b>To Do</b> selama lebih dari 20 menit. Mohon segera diproses ke <i>In Progress</i>.`,
+        );
+        await markAlertSent(key, "REMINDER_TODO_20M");
+        console.log(`Sent REMINDER_TODO_20M for ${key}`);
+      }
+
+      if (
+        isFullSla &&
+        !alreadyWentThroughPending &&
+        hoursInToDo >= 1 &&
         !(await hasAlertBeenSent(key, "SLA_TODO"))
       ) {
-        await sendAlertMessage(
-          `⚠️ *SLA Breach: To Do*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\n\nTiket belum dikerjakan (In Progress) lebih dari 1 jam sejak dibuat!`,
+        await sendTelegramMessage(
+          `⚠️ <b>SLA Breach: To Do</b>\n\n📌 <b>[${key}]</b> ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket berada di status <b>To Do</b> lebih dari 1 jam belum dikerjakan (In Progress)!`,
         );
         await markAlertSent(key, "SLA_TODO");
         console.log(`Sent SLA_TODO for ${key}`);

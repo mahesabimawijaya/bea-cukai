@@ -142,12 +142,13 @@ function getStatusStartTime(issue, targetStatus) {
   if (!issue.changelog || !issue.changelog.histories)
     return new Date(issue.fields.created);
 
+  const target = (targetStatus || "").toLowerCase().trim();
   for (let i = issue.changelog.histories.length - 1; i >= 0; i--) {
     const history = issue.changelog.histories[i];
     for (const item of history.items) {
       if (
         item.field === "status" &&
-        item.toString.toLowerCase() === targetStatus.toLowerCase()
+        (item.toString || "").toLowerCase().trim() === target
       ) {
         return new Date(history.created);
       }
@@ -345,23 +346,33 @@ export async function runSlaCheck(sendAlertMessage, isFullSla = true) {
     }
 
     if (statusCat === "todo") {
-      // SLA breach "To Do" cuma dihitung pada kunjungan PERTAMA tiket ke status
-      // itu. Kalau tiket sempat di-Pending lalu siklusnya balik lagi lewat Task
-      // To Do -> To Do, kunjungan kedua & seterusnya TIDAK dihitung.
-      //
-      // hoursSinceCreated di sini bukan "lama di To Do saat ini", tapi "lama
-      // sejak tiket dibuat" — begitu tiket sudah pernah Pending, angka itu nyaris
-      // pasti >1 jam dan salah memicu alert. Contoh nyata: BUGS26-1868.
       const alreadyWentThroughPending = hasEverBeenInStatus(issue, "pending");
+      // Hitung dari waktu masuk ke To Do (bukan created), karena tiket sering lama mengantri di Task To Do dulu.
+      const toDoStart = getStatusStartTime(issue, rawStatus);
+      const minutesInToDo = (now.getTime() - toDoStart.getTime()) / (1000 * 60);
+      const hoursInToDo = minutesInToDo / 60;
 
       if (
         isFullSla &&
         !alreadyWentThroughPending &&
-        hoursSinceCreated >= 1 &&
+        minutesInToDo >= 20 &&
+        !(await hasAlertBeenSent(key, "REMINDER_TODO_20M"))
+      ) {
+        await sendAlertMessage(
+          `⏳ *Reminder: To Do (20 Menit)*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket sudah berada di antrean *To Do* selama lebih dari 20 menit. Mohon segera diproses ke _In Progress_.`,
+        );
+        await markAlertSent(key, "REMINDER_TODO_20M");
+        console.log(`Sent REMINDER_TODO_20M for ${key}`);
+      }
+
+      if (
+        isFullSla &&
+        !alreadyWentThroughPending &&
+        hoursInToDo >= 1 &&
         !(await hasAlertBeenSent(key, "SLA_TODO"))
       ) {
         await sendAlertMessage(
-          `⚠️ *SLA Breach: To Do*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket belum dikerjakan (In Progress) lebih dari 1 jam sejak dibuat!`,
+          `⚠️ *SLA Breach: To Do*\n\n📌 *[${key}]* ${summary}\n👤 PIC: ${assignee}\nhttps://jira.beacukai.go.id/browse/${key}\n\nTiket berada di status *To Do* lebih dari 1 jam belum dikerjakan (In Progress)!`,
         );
         await markAlertSent(key, "SLA_TODO");
         console.log(`Sent SLA_TODO for ${key}`);
