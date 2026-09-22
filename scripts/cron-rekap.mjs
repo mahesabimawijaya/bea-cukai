@@ -22,6 +22,7 @@ const REMOVE_NAMES = [
   "Laksito Pamilih",
   "Ilyas Nur Hidayah",
   "Auliya Balindra Midaweka",
+  "Auliya BM",
   "Lalang Indra Susila",
 ];
 
